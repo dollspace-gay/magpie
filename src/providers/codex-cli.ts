@@ -88,6 +88,7 @@ export class CodexCliProvider implements AIProvider {
     let done = false
     let error: Error | null = null
     let lastActivity = Date.now()
+    let stderrOutput = ''
 
     // Timeout checker - kill if no activity for too long
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
@@ -112,15 +113,16 @@ export class CodexCliProvider implements AIProvider {
       }
     })
 
-    child.stderr.on('data', (_data) => {
+    child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      stderrOutput += data.toString()
     })
 
     child.on('close', (code) => {
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       if (code !== 0 && !error) {
-        error = new Error(`Codex CLI exited with code ${code}`)
+        error = new Error(`Codex CLI exited with code ${code}${stderrOutput ? ': ' + stderrOutput : ''}`)
       }
       if (resolveNext) {
         resolveNext({ value: undefined as any, done: true })

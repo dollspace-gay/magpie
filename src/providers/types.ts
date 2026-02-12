@@ -13,7 +13,7 @@ export interface AIProvider {
   setCwd?(cwd: string): void
   // Session management for multi-turn conversations
   sessionId?: string
-  startSession?(): void  // Create a new session
+  startSession?(name?: string): void  // Create a new session, optional name for identification
   endSession?(): void    // Clean up session
 }
 

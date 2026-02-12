@@ -8,6 +8,7 @@ export class ClaudeCodeProvider implements AIProvider {
   private timeout: number  // ms, 0 = no timeout
   sessionId?: string
   private isFirstMessage: boolean = true
+  private sessionName?: string
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Claude Code CLI
@@ -20,14 +21,16 @@ export class ClaudeCodeProvider implements AIProvider {
     this.cwd = cwd
   }
 
-  startSession(): void {
+  startSession(name?: string): void {
     this.sessionId = randomUUID()
     this.isFirstMessage = true
+    this.sessionName = name
   }
 
   endSession(): void {
     this.sessionId = undefined
     this.isFirstMessage = true
+    this.sessionName = undefined
   }
 
   async chat(messages: Message[], systemPrompt?: string): Promise<string> {
@@ -51,6 +54,9 @@ export class ClaudeCodeProvider implements AIProvider {
 
   private buildPrompt(messages: Message[], systemPrompt?: string): string {
     let prompt = ''
+    if (this.sessionName && this.isFirstMessage) {
+      prompt += `[${this.sessionName}]\n\n`
+    }
     if (systemPrompt) {
       prompt += `System: ${systemPrompt}\n\n`
     }

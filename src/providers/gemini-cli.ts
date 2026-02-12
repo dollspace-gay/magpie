@@ -5,9 +5,12 @@ export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
-  // Gemini CLI doesn't support custom session IDs (only index numbers)
-  // So we don't enable session mode - orchestrator will use full context
-  sessionId?: string  // Always undefined
+  // Session support: Gemini CLI returns session_id (UUID) in JSON output,
+  // and supports --resume <uuid> for continuing sessions
+  sessionId?: string
+  private sessionEnabled = false
+  private isFirstMessage = true
+  private sessionName?: string
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Gemini CLI (uses Google account)
@@ -19,22 +22,42 @@ export class GeminiCliProvider implements AIProvider {
     this.cwd = cwd
   }
 
-  // No-op: Gemini CLI doesn't support reliable session management
-  startSession(): void {}
-  endSession(): void {}
+  startSession(name?: string): void {
+    this.sessionEnabled = true
+    this.isFirstMessage = true
+    this.sessionId = undefined  // Will be set from first response's JSON
+    this.sessionName = name
+  }
+
+  endSession(): void {
+    this.sessionEnabled = false
+    this.isFirstMessage = true
+    this.sessionId = undefined
+    this.sessionName = undefined
+  }
 
   async chat(messages: Message[], systemPrompt?: string): Promise<string> {
-    const prompt = this.buildPrompt(messages, systemPrompt)
-    return await this.runGemini(prompt)
+    const prompt = this.sessionEnabled && !this.isFirstMessage
+      ? this.buildPromptLastOnly(messages)
+      : this.buildPrompt(messages, systemPrompt)
+    const result = await this.runGemini(prompt)
+    this.isFirstMessage = false
+    return result
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
-    const prompt = this.buildPrompt(messages, systemPrompt)
+    const prompt = this.sessionEnabled && !this.isFirstMessage
+      ? this.buildPromptLastOnly(messages)
+      : this.buildPrompt(messages, systemPrompt)
     yield* this.runGeminiStream(prompt)
+    this.isFirstMessage = false
   }
 
   private buildPrompt(messages: Message[], systemPrompt?: string): string {
     let prompt = ''
+    if (this.sessionName && this.isFirstMessage) {
+      prompt += `[${this.sessionName}]\n\n`
+    }
     if (systemPrompt) {
       prompt += `System: ${systemPrompt}\n\n`
     }
@@ -44,11 +67,19 @@ export class GeminiCliProvider implements AIProvider {
     return prompt
   }
 
+  // Only get the last user message for session continuation
+  private buildPromptLastOnly(messages: Message[]): string {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+    return lastUserMsg?.content || ''
+  }
+
   private runGemini(prompt: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Gemini CLI uses positional prompt and -y for auto-approve
-      // Use --output-format text for clean output
-      const args = ['-y', '-o', 'text', prompt]
+      const args = ['-y', '-o', 'json']
+      if (this.sessionEnabled && this.sessionId) {
+        args.push('--resume', this.sessionId)
+      }
+      args.push(prompt)
 
       const child = spawn('gemini', args, {
         cwd: this.cwd,
@@ -70,7 +101,17 @@ export class GeminiCliProvider implements AIProvider {
         if (code !== 0) {
           reject(new Error(`Gemini CLI exited with code ${code}: ${error}`))
         } else {
-          resolve(output.trim())
+          try {
+            const json = JSON.parse(output.trim())
+            // Capture session_id from response
+            if (this.sessionEnabled && json.session_id) {
+              this.sessionId = json.session_id
+            }
+            resolve(json.response || '')
+          } catch {
+            // Fallback: treat as plain text if JSON parsing fails
+            resolve(output.trim())
+          }
         }
       })
 
@@ -81,8 +122,11 @@ export class GeminiCliProvider implements AIProvider {
   }
 
   private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
-    // Gemini CLI with text output for streaming
-    const args = ['-y', '-o', 'text', prompt]
+    const args = ['-y', '-o', 'stream-json']
+    if (this.sessionEnabled && this.sessionId) {
+      args.push('--resume', this.sessionId)
+    }
+    args.push(prompt)
 
     const child = spawn('gemini', args, {
       cwd: this.cwd,
@@ -94,6 +138,7 @@ export class GeminiCliProvider implements AIProvider {
     let done = false
     let error: Error | null = null
     let lastActivity = Date.now()
+    let lineBuf = ''  // Buffer for NDJSON line parsing
 
     // Timeout checker - kill if no activity for too long
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
@@ -107,14 +152,36 @@ export class GeminiCliProvider implements AIProvider {
       }
     }, 10000) : null  // Check every 10s
 
-    child.stdout.on('data', (data) => {
-      lastActivity = Date.now()
-      const chunk = data.toString()
+    const pushChunk = (chunk: string) => {
       if (resolveNext) {
         resolveNext({ chunk })
         resolveNext = null
       } else {
         chunks.push(chunk)
+      }
+    }
+
+    child.stdout.on('data', (data) => {
+      lastActivity = Date.now()
+      lineBuf += data.toString()
+
+      // Parse complete NDJSON lines
+      const lines = lineBuf.split('\n')
+      lineBuf = lines.pop() || ''  // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const event = JSON.parse(trimmed)
+          if (event.type === 'init' && event.session_id && this.sessionEnabled) {
+            this.sessionId = event.session_id
+          } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
+            pushChunk(event.content)
+          }
+        } catch {
+          // Not valid JSON, ignore
+        }
       }
     })
 
@@ -124,6 +191,19 @@ export class GeminiCliProvider implements AIProvider {
 
     child.on('close', (code) => {
       if (timeoutChecker) clearInterval(timeoutChecker)
+      // Process any remaining data in line buffer
+      if (lineBuf.trim()) {
+        try {
+          const event = JSON.parse(lineBuf.trim())
+          if (event.type === 'init' && event.session_id && this.sessionEnabled) {
+            this.sessionId = event.session_id
+          } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
+            pushChunk(event.content)
+          }
+        } catch {
+          // ignore
+        }
+      }
       done = true
       if (code !== 0 && !error) {
         error = new Error(`Gemini CLI exited with code ${code}`)
