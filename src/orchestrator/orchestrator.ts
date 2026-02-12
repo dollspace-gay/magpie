@@ -223,6 +223,8 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     // Get final conclusion from summarizer
     const finalConclusion = await this.getFinalConclusion(summaries)
 
+    // End summarizer session for clean JSON extraction call
+    this.summarizer.provider.endSession?.()
     const parsedIssues = await this.extractIssues()
 
     return {
@@ -424,6 +426,10 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const summaries = await this.collectSummaries()
       const finalConclusion = await this.getFinalConclusion(summaries)
 
+      // End summarizer session before structurization so it gets a clean,
+      // non-session call. The session context (convergence + conclusion) would
+      // pollute the JSON extraction and --resume ignores custom system prompts.
+      this.summarizer.provider.endSession?.()
       const parsedIssues = await this.extractIssues()
 
       return {
@@ -443,7 +449,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         reviewer.provider.endSession?.()
       }
       this.analyzer.provider.endSession?.()
-      this.summarizer.provider.endSession?.()
+      this.summarizer.provider.endSession?.()  // Safe to call again (idempotent)
     }
   }
 
@@ -640,8 +646,13 @@ Rules:
 - Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only`
 
     try {
+      this.options.onWaiting?.('structurizer')
       const messages: Message[] = [{ role: 'user', content: prompt }]
-      const response = await this.summarizer.provider.chat(messages, 'You extract structured issues from code review text. Output only valid JSON.')
+      const response = await this.summarizer.provider.chat(
+        messages,
+        'You extract structured issues from code review text. Output only valid JSON.',
+        { disableTools: true }  // Pure text extraction — must not trigger tool use
+      )
       this.trackTokens('summarizer', prompt, response)
 
       const parsed = parseReviewerOutput(response)
@@ -657,7 +668,7 @@ Rules:
         })
       }
     } catch {
-      // Structurization failed, return empty
+      // Structurization failed — non-fatal, just skip post-processing
     }
 
     return []

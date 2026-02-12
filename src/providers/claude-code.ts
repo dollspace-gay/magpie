@@ -1,6 +1,6 @@
 import { spawn } from 'child_process'
 import { randomUUID } from 'crypto'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
@@ -33,12 +33,12 @@ export class ClaudeCodeProvider implements AIProvider {
     this.sessionName = undefined
   }
 
-  async chat(messages: Message[], systemPrompt?: string): Promise<string> {
+  async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
     // In session mode, only send the last user message (history is in session)
     const prompt = this.sessionId && !this.isFirstMessage
       ? this.buildPromptLastOnly(messages)
       : this.buildPrompt(messages, systemPrompt)
-    const result = await this.runClaude(prompt, systemPrompt)
+    const result = await this.runClaude(prompt, systemPrompt, options)
     this.isFirstMessage = false
     return result
   }
@@ -72,11 +72,16 @@ export class ClaudeCodeProvider implements AIProvider {
     return lastUserMsg?.content || ''
   }
 
-  private runClaude(prompt: string, systemPrompt?: string): Promise<string> {
+  private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
     return new Promise((resolve, reject) => {
       // Build args based on session state
       // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
       const args = ['-p', '-', '--dangerously-skip-permissions']
+      // Disable all tools for pure text extraction (e.g., JSON structurization)
+      // Without this, Claude may use Edit/Write to modify files instead of outputting text
+      if (options?.disableTools) {
+        args.push('--tools', '')
+      }
       if (this.sessionId) {
         if (this.isFirstMessage) {
           args.push('--session-id', this.sessionId)

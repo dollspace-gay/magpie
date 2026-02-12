@@ -11,17 +11,27 @@ const SEVERITY_ORDER: Record<string, number> = { critical: 0, high: 1, medium: 2
  * Returns null if no valid JSON block found.
  */
 export function parseReviewerOutput(response: string): ReviewerOutput | null {
+  // Try ```json fenced block first, then raw JSON object
   const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
-  if (!jsonMatch) return null
+  let jsonStr = jsonMatch?.[1]
+
+  if (!jsonStr) {
+    // Try to find a raw JSON object with "issues" array
+    const rawMatch = response.match(/\{[\s\S]*"issues"\s*:\s*\[[\s\S]*\][\s\S]*\}/)
+    if (rawMatch) jsonStr = rawMatch[0]
+  }
+
+  if (!jsonStr) return null
 
   try {
-    const parsed = JSON.parse(jsonMatch[1])
+    const parsed = JSON.parse(jsonStr)
 
-    if (!Array.isArray(parsed.issues) || typeof parsed.verdict !== 'string' || typeof parsed.summary !== 'string') {
+    if (!Array.isArray(parsed.issues)) {
       return null
     }
 
-    const verdict = VALID_VERDICTS.includes(parsed.verdict) ? parsed.verdict : 'comment'
+    const verdict = (typeof parsed.verdict === 'string' && VALID_VERDICTS.includes(parsed.verdict))
+      ? parsed.verdict : 'comment'
 
     const issues: ReviewIssue[] = parsed.issues
       .filter((issue: any) =>
@@ -43,7 +53,7 @@ export function parseReviewerOutput(response: string): ReviewerOutput | null {
         codeSnippet: typeof issue.codeSnippet === 'string' ? issue.codeSnippet : undefined
       }))
 
-    return { issues, verdict, summary: parsed.summary }
+    return { issues, verdict, summary: parsed.summary || '' }
   } catch {
     return null
   }

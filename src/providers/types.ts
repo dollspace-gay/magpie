@@ -6,9 +6,14 @@ export interface Message {
   content: string
 }
 
+export interface ChatOptions {
+  /** Disable tool use for this call (e.g., for pure text extraction) */
+  disableTools?: boolean
+}
+
 export interface AIProvider {
   name: string
-  chat(messages: Message[], systemPrompt?: string): Promise<string>
+  chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string>
   chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown>
   setCwd?(cwd: string): void
   // Session management for multi-turn conversations
