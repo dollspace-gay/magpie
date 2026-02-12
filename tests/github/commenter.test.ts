@@ -1,6 +1,6 @@
 // tests/github/commenter.test.ts
 import { describe, it, expect } from 'vitest'
-import { buildPRReviewPayload } from '../../src/github/commenter'
+import { buildPRReviewPayload, getPRHeadSha, postPRReview } from '../../src/github/commenter'
 import type { MergedIssue } from '../../src/orchestrator/types'
 
 describe('buildPRReviewPayload', () => {
@@ -72,5 +72,16 @@ describe('buildPRReviewPayload', () => {
     const payload = buildPRReviewPayload(issues, 'comment', 'SHA')
     expect(payload.comments[0].body).toContain('claude')
     expect(payload.comments[0].body).toContain('gemini')
+  })
+})
+
+describe('PR number validation', () => {
+  it('should reject non-numeric PR numbers in getPRHeadSha', () => {
+    expect(() => getPRHeadSha('123; rm -rf /')).toThrow('Invalid PR number')
+  })
+
+  it('should reject non-numeric PR numbers in postPRReview', () => {
+    const payload = buildPRReviewPayload([], 'approve', 'SHA')
+    expect(() => postPRReview('abc', payload)).toThrow('Invalid PR number')
   })
 })

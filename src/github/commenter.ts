@@ -55,6 +55,12 @@ function formatIssueComment(issue: MergedIssue): string {
   return comment
 }
 
+function validatePRNumber(prNumber: string): void {
+  if (!/^\d+$/.test(prNumber)) {
+    throw new Error(`Invalid PR number: ${prNumber}`)
+  }
+}
+
 /**
  * Post a PR review to GitHub using gh CLI.
  */
@@ -62,6 +68,7 @@ export function postPRReview(
   prNumber: string,
   payload: PRReviewPayload
 ): void {
+  validatePRNumber(prNumber)
   const jsonPayload = JSON.stringify(payload)
   const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
   const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
@@ -78,6 +85,7 @@ export function postPRReview(
  * Get the HEAD commit SHA for a PR.
  */
 export function getPRHeadSha(prNumber: string): string {
+  validatePRNumber(prNumber)
   const result = execSync(
     `gh pr view ${prNumber} --json headRefOid --jq .headRefOid`,
     { encoding: 'utf-8' }
