@@ -113,7 +113,8 @@ export class ContextGatherer {
       summary: parsed.summary,
       gatheredAt: new Date(),
       prNumber,
-      baseBranch
+      baseBranch,
+      rawReferences: references
     }
   }
 

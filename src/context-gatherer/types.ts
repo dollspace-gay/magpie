@@ -55,6 +55,9 @@ export interface GatheredContext {
   gatheredAt: Date
   prNumber: string
   baseBranch: string
+
+  // Raw reference data for structured call chain display
+  rawReferences?: RawReference[]
 }
 
 /** 原始引用数据 */

@@ -82,6 +82,28 @@ export function findReferences(symbols: string[], cwd: string = process.cwd()): 
 }
 
 /**
+ * Format raw references into a structured call chain text for reviewers.
+ * Shows each changed symbol with its callers and code snippets.
+ */
+export function formatCallChainForReviewer(references: RawReference[]): string {
+  if (references.length === 0) return ''
+
+  const sections = references.map(ref => {
+    const callers = ref.foundInFiles.slice(0, 10) // Limit to 10 callers
+    const callerLines = callers.map((f, i) =>
+      `${i + 1}. ${f.file}:${f.line}\n   > ${f.content.slice(0, 150)}`
+    ).join('\n\n')
+
+    return `### Callers of \`${ref.symbol}\`
+Found in ${ref.foundInFiles.length} locations:
+
+${callerLines}`
+  })
+
+  return `## Call Chain Context\n\n${sections.join('\n\n---\n\n')}`
+}
+
+/**
  * Collect all references for changed files
  */
 export function collectReferences(diff: string, cwd: string = process.cwd()): RawReference[] {

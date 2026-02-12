@@ -14,6 +14,7 @@ import type {
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
 import { parseReviewerOutput, deduplicateIssues, parseFocusAreas } from './issue-parser.js'
+import { formatCallChainForReviewer } from '../context-gatherer/collectors/reference-collector.js'
 
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
@@ -469,9 +470,15 @@ ${this.gatheredContext.summary}
         focusSection = `\nThe analyzer suggests focusing on: ${focusAreas.join('; ')}.\nThese are suggestions — also flag anything else you notice beyond these areas.\n`
       }
 
+      // Add structured call chain context if available
+      let callChainSection = ''
+      if (this.gatheredContext?.rawReferences && this.gatheredContext.rawReferences.length > 0) {
+        callChainSection = '\n' + formatCallChainForReviewer(this.gatheredContext.rawReferences) + '\n'
+      }
+
       // First round - independent review, no other reviewers' opinions
       const prompt = `Task: ${this.taskPrompt}
-${contextSection}${focusSection}Here is the analysis:
+${contextSection}${focusSection}${callChainSection}Here is the analysis:
 
 ${this.analysis}
 
