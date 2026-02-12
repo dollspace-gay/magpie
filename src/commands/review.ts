@@ -857,6 +857,8 @@ export const reviewCommand = new Command('review')
           })
         } : undefined,
         onContextGathered: (context) => {
+          // Flush analysis buffer before displaying context
+          flushBuffer()
           // Display context gathering result
           console.log(chalk.magenta.bold(`\n${'─'.repeat(50)}`))
           console.log(chalk.magenta.bold(`  🔍 System Context`))
