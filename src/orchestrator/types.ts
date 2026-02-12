@@ -59,3 +59,29 @@ export interface OrchestratorOptions {
   onPostAnalysisQA?: () => Promise<{ target: string; question: string } | null>
   onContextGathered?: (context: GatheredContext) => void  // Context gathering complete callback
 }
+
+/** Structured issue from a reviewer */
+export interface ReviewIssue {
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'nitpick'
+  category: string
+  file: string
+  line?: number
+  endLine?: number
+  title: string
+  description: string
+  suggestedFix?: string
+  codeSnippet?: string
+}
+
+/** Structured output from a reviewer (parsed from JSON block in response) */
+export interface ReviewerOutput {
+  issues: ReviewIssue[]
+  verdict: 'approve' | 'request_changes' | 'comment'
+  summary: string
+}
+
+/** Deduplicated issue with attribution */
+export interface MergedIssue extends ReviewIssue {
+  raisedBy: string[]       // reviewer IDs who found this issue
+  descriptions: string[]   // each reviewer's description
+}
