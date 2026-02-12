@@ -255,13 +255,13 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
     try {
       // Run context gathering and analysis in parallel (they're independent)
+      // Display is sequential: analysis streams first, then context appears after
       const contextPromise = this.contextGatherer
         ? (async () => {
             this.options.onWaiting?.('context-gatherer')
             try {
               const diff = this.extractDiffFromPrompt(prompt)
               this.gatheredContext = await this.contextGatherer!.gather(diff, label, 'main')
-              this.options.onContextGathered?.(this.gatheredContext)
             } catch (error) {
               console.warn('Context gathering failed:', error)
             }
@@ -279,6 +279,11 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       })()
 
       await Promise.all([contextPromise, analysisPromise])
+
+      // Display context after analysis completes (parallel work, sequential display)
+      if (this.gatheredContext) {
+        this.options.onContextGathered?.(this.gatheredContext)
+      }
 
       // Post-analysis Q&A: let user ask specific reviewers questions before debate
       if (this.options.onPostAnalysisQA) {
