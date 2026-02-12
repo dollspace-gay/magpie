@@ -940,6 +940,26 @@ export const reviewCommand = new Command('review')
         }
       }
 
+      // Save and compare with previous review (if structured issues available)
+      if (result.parsedIssues && result.parsedIssues.length > 0) {
+        try {
+          const { HistoryTracker } = await import('../history/tracker.js')
+          const repoName = process.cwd().split('/').pop() || 'repo'
+          const tracker = new HistoryTracker(process.cwd())
+          await tracker.saveReview(repoName, target.label, result.parsedIssues)
+
+          const diff = await tracker.diffLatest(repoName, target.label)
+          if (diff) {
+            console.log(chalk.cyan.bold(`\n  vs. previous review (${diff.previousTimestamp}):`))
+            if (diff.fixed.length > 0) console.log(chalk.green(`    ✅ ${diff.fixed.length} fixed`))
+            if (diff.stillOpen.length > 0) console.log(chalk.yellow(`    ⚠️  ${diff.stillOpen.length} still open`))
+            if (diff.new.length > 0) console.log(chalk.red(`    🆕 ${diff.new.length} new`))
+          }
+        } catch {
+          // History tracking is optional, don't fail the review
+        }
+      }
+
       // Post-processing: comment flow (only for PR reviews with structured issues)
       if (target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
         if (!rl) {

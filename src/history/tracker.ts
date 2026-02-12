@@ -35,7 +35,8 @@ export class HistoryTracker {
       issues
     }
 
-    const filename = `review-${record.timestamp.replace(/[:.]/g, '-')}.json`
+    const suffix = Math.random().toString(36).slice(2, 8)
+    const filename = `review-${record.timestamp.replace(/[:.]/g, '-')}-${suffix}.json`
     writeFileSync(join(dir, filename), JSON.stringify(record, null, 2))
   }
 

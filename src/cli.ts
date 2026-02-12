@@ -3,6 +3,7 @@ import { Command } from 'commander'
 import { reviewCommand } from './commands/review.js'
 import { initCommand } from './commands/init.js'
 import { discussCommand } from './commands/discuss.js'
+import { statsCommand } from './commands/stats.js'
 
 const program = new Command()
 
@@ -14,5 +15,6 @@ program
 program.addCommand(reviewCommand)
 program.addCommand(initCommand)
 program.addCommand(discussCommand)
+program.addCommand(statsCommand)
 
 program.parse()
