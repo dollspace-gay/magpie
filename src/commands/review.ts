@@ -961,36 +961,16 @@ export const reviewCommand = new Command('review')
       }
 
       // Post-processing: comment flow for PR reviews
-      if (target.type === 'pr') {
+      if (target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
         if (!rl) {
           rl = createInterface({ input: process.stdin, output: process.stdout })
         }
-        const prNum = target.label.match(/\d+/)?.[0] || target.label
-
-        if (result.parsedIssues && result.parsedIssues.length > 0) {
-          // Structured issues available → per-issue interactive review
-          const enterPostProcess = await new Promise<string>(resolve => {
-            rl!.question(chalk.yellow('\n  Review and post individual comments to GitHub? (y/n): '), resolve)
-          })
-          if (enterPostProcess.trim().toLowerCase() === 'y') {
-            await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef)
-          }
-        } else {
-          // No structured issues → offer to post final conclusion as general comment
-          const postConclusion = await new Promise<string>(resolve => {
-            rl!.question(chalk.yellow('\n  Post final conclusion as a PR comment? (y/n): '), resolve)
-          })
-          if (postConclusion.trim().toLowerCase() === 'y') {
-            try {
-              const { postPRReview, getPRHeadSha } = await import('../github/commenter.js')
-              const headSha = getPRHeadSha(prNum)
-              const body = `## Magpie Review\n\n${result.finalConclusion}`
-              postPRReview(prNum, { body, event: 'COMMENT', comments: [], commit_id: headSha })
-              console.log(chalk.green(`\n  ✓ Posted review comment to PR #${prNum}`))
-            } catch (error) {
-              console.error(chalk.red(`\n  Failed to post: ${error instanceof Error ? error.message : error}`))
-            }
-          }
+        const enterPostProcess = await new Promise<string>(resolve => {
+          rl!.question(chalk.yellow('\n  Review and post individual comments to GitHub? (y/n): '), resolve)
+        })
+        if (enterPostProcess.trim().toLowerCase() === 'y') {
+          const prNum = target.label.match(/\d+/)?.[0] || target.label
+          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef)
         }
       }
 

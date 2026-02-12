@@ -224,7 +224,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     // Get final conclusion from summarizer
     const finalConclusion = await this.getFinalConclusion(summaries)
 
-    const parsedIssues = this.extractIssues()
+    const parsedIssues = await this.extractIssues()
 
     return {
       prNumber: label,
@@ -425,7 +425,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const summaries = await this.collectSummaries()
       const finalConclusion = await this.getFinalConclusion(summaries)
 
-      const parsedIssues = this.extractIssues()
+      const parsedIssues = await this.extractIssues()
 
       return {
         prNumber: label,
@@ -590,8 +590,9 @@ Previous rounds discussion:`
     return this.reviewers
   }
 
-  /** Extract and deduplicate structured issues from all debate messages */
-  private extractIssues(): MergedIssue[] {
+  /** Extract and deduplicate structured issues from all debate messages.
+   *  Falls back to AI structurization if no JSON blocks found. */
+  private async extractIssues(): Promise<MergedIssue[]> {
     const issuesByReviewer = new Map<string, ReviewIssue[]>()
 
     for (const msg of this.conversationHistory) {
@@ -603,8 +604,80 @@ Previous rounds discussion:`
       }
     }
 
-    if (issuesByReviewer.size === 0) return []
-    return deduplicateIssues(issuesByReviewer)
+    if (issuesByReviewer.size > 0) {
+      return deduplicateIssues(issuesByReviewer)
+    }
+
+    // No structured JSON found — ask the summarizer to extract issues from the conversation
+    return this.structurizeIssues()
+  }
+
+  /** Use AI to extract structured issues from unstructured review text */
+  private async structurizeIssues(): Promise<MergedIssue[]> {
+    // Collect last round of messages from each reviewer
+    const lastMessages = new Map<string, string>()
+    for (const msg of this.conversationHistory) {
+      if (msg.reviewerId === 'user') continue
+      lastMessages.set(msg.reviewerId, msg.content)
+    }
+
+    if (lastMessages.size === 0) return []
+
+    const reviewText = [...lastMessages.entries()]
+      .map(([id, content]) => `[${id}]:\n${content}`)
+      .join('\n\n---\n\n')
+
+    const prompt = `Based on these code review discussions, extract ALL concrete issues mentioned by the reviewers into a structured JSON format.
+
+${reviewText}
+
+Output ONLY a JSON block (no other text):
+\`\`\`json
+{
+  "issues": [
+    {
+      "severity": "critical|high|medium|low|nitpick",
+      "category": "security|performance|error-handling|style|correctness|architecture",
+      "file": "path/to/file",
+      "line": 42,
+      "title": "One-line summary",
+      "description": "Detailed explanation",
+      "suggestedFix": "What to do about it",
+      "raisedBy": ["reviewer-id-1", "reviewer-id-2"]
+    }
+  ]
+}
+\`\`\`
+
+Rules:
+- Include every issue mentioned by any reviewer
+- If multiple reviewers mention the same issue, list all their IDs in raisedBy
+- Use the exact reviewer IDs: ${[...lastMessages.keys()].join(', ')}
+- If a file path or line number is mentioned, include it; otherwise omit the field
+- Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only`
+
+    try {
+      const messages: Message[] = [{ role: 'user', content: prompt }]
+      const response = await this.summarizer.provider.chat(messages, 'You extract structured issues from code review text. Output only valid JSON.')
+      this.trackTokens('summarizer', prompt, response)
+
+      const parsed = parseReviewerOutput(response)
+      if (parsed && parsed.issues.length > 0) {
+        // Convert to MergedIssue format — raisedBy may already be in the JSON
+        return parsed.issues.map(issue => {
+          const raw = issue as any
+          return {
+            ...issue,
+            raisedBy: raw.raisedBy || ['summarizer'],
+            descriptions: [issue.description]
+          }
+        })
+      }
+    } catch {
+      // Structurization failed, return empty
+    }
+
+    return []
   }
 
   private async collectSummaries(): Promise<DebateSummary[]> {
