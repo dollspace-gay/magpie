@@ -88,6 +88,20 @@ export function deduplicateIssues(
   return merged
 }
 
+/**
+ * Extract suggested review focus areas from analyzer output.
+ * Looks for a "## Suggested Review Focus" section with bullet points.
+ */
+export function parseFocusAreas(analysis: string): string[] {
+  const match = analysis.match(/## Suggested Review Focus\s*\n([\s\S]*?)(?=\n##|\n*$)/)
+  if (!match) return []
+
+  const lines = match[1].trim().split('\n')
+  return lines
+    .map(line => line.replace(/^[-*]\s*/, '').trim())
+    .filter(line => line.length > 0)
+}
+
 /** Check if two issues are similar enough to merge */
 function isSimilarIssue(a: ReviewIssue, b: ReviewIssue): boolean {
   // Must be same file

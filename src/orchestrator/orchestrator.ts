@@ -13,7 +13,7 @@ import type {
 } from './types.js'
 import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
-import { parseReviewerOutput, deduplicateIssues } from './issue-parser.js'
+import { parseReviewerOutput, deduplicateIssues, parseFocusAreas } from './issue-parser.js'
 
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
@@ -462,9 +462,16 @@ ${this.gatheredContext.summary}
 `
       }
 
+      // Extract and inject focus hints from analysis
+      let focusSection = ''
+      const focusAreas = parseFocusAreas(this.analysis)
+      if (focusAreas.length > 0) {
+        focusSection = `\nThe analyzer suggests focusing on: ${focusAreas.join('; ')}.\nThese are suggestions — also flag anything else you notice beyond these areas.\n`
+      }
+
       // First round - independent review, no other reviewers' opinions
       const prompt = `Task: ${this.taskPrompt}
-${contextSection}Here is the analysis:
+${contextSection}${focusSection}Here is the analysis:
 
 ${this.analysis}
 

@@ -1,6 +1,6 @@
 // tests/orchestrator/issue-parser.test.ts
 import { describe, it, expect } from 'vitest'
-import { parseReviewerOutput, deduplicateIssues } from '../../src/orchestrator/issue-parser'
+import { parseReviewerOutput, deduplicateIssues, parseFocusAreas } from '../../src/orchestrator/issue-parser'
 
 describe('parseReviewerOutput', () => {
   it('should parse valid JSON block from response', () => {
@@ -98,5 +98,27 @@ describe('deduplicateIssues', () => {
     const merged = deduplicateIssues(issuesByReviewer)
     expect(merged[0].severity).toBe('critical')
     expect(merged[1].severity).toBe('low')
+  })
+})
+
+describe('parseFocusAreas', () => {
+  it('should extract focus areas from analysis', () => {
+    const analysis = `## What this PR does
+Some analysis here.
+
+## Suggested Review Focus
+- Security: authentication changes need careful review
+- Performance: new database queries introduced
+- Error handling: missing try/catch in async paths`
+
+    const focus = parseFocusAreas(analysis)
+    expect(focus).toHaveLength(3)
+    expect(focus[0]).toContain('Security')
+  })
+
+  it('should return empty array if no focus section', () => {
+    const analysis = 'Just some analysis without focus section.'
+    const focus = parseFocusAreas(analysis)
+    expect(focus).toHaveLength(0)
   })
 })

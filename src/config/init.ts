@@ -155,6 +155,7 @@ analyzer:
     3. **Purpose** - What problem this solves or what feature it adds
     4. **Trade-offs** - Any trade-offs made and why
     5. **Things to note** - Important details reviewers should pay attention to
+    6. **Suggested Review Focus** - List 2-4 key areas reviewers should focus on for THIS specific PR
 
     Use 'gh pr view' and 'gh pr diff' to get the PR details.
     Be concise but thorough.
