@@ -50,7 +50,8 @@ export function parseReviewerOutput(response: string): ReviewerOutput | null {
         title: issue.title,
         description: issue.description,
         suggestedFix: typeof issue.suggestedFix === 'string' ? issue.suggestedFix : undefined,
-        codeSnippet: typeof issue.codeSnippet === 'string' ? issue.codeSnippet : undefined
+        codeSnippet: typeof issue.codeSnippet === 'string' ? issue.codeSnippet : undefined,
+        raisedBy: Array.isArray(issue.raisedBy) ? issue.raisedBy : undefined
       }))
 
     return { issues, verdict, summary: parsed.summary || '' }

@@ -601,7 +601,8 @@ Previous rounds discussion:`
     return this.structurizeIssues()
   }
 
-  /** Use AI to extract structured issues from unstructured review text */
+  /** Use AI to extract structured issues from unstructured review text.
+   *  Retries with feedback if the first attempt produces invalid JSON. */
   private async structurizeIssues(): Promise<MergedIssue[]> {
     // Collect last round of messages from each reviewer
     const lastMessages = new Map<string, string>()
@@ -616,7 +617,9 @@ Previous rounds discussion:`
       .map(([id, content]) => `[${id}]:\n${content}`)
       .join('\n\n---\n\n')
 
-    const prompt = `Based on these code review discussions, extract ALL concrete issues mentioned by the reviewers into a structured JSON format.
+    const reviewerIds = [...lastMessages.keys()].join(', ')
+
+    const basePrompt = `Based on these code review discussions, extract ALL concrete issues mentioned by the reviewers into a structured JSON format.
 
 ${reviewText}
 
@@ -630,8 +633,8 @@ Output ONLY a JSON block (no other text):
       "file": "path/to/file",
       "line": 42,
       "title": "One-line summary",
-      "description": "Detailed explanation",
-      "suggestedFix": "What to do about it",
+      "description": "Detailed markdown explanation (see rules below)",
+      "suggestedFix": "Brief one-line fix summary",
       "raisedBy": ["reviewer-id-1", "reviewer-id-2"]
     }
   ]
@@ -640,35 +643,54 @@ Output ONLY a JSON block (no other text):
 
 Rules:
 - Include every issue mentioned by any reviewer
+- The "description" field will be posted as a GitHub PR comment. Make it comprehensive markdown covering: (1) What the problem is, (2) Why it matters (impact/risk), (3) The original problematic code quoted in a code block, (4) The suggested fix shown as code, (5) Why the fix is correct
 - If multiple reviewers mention the same issue, list all their IDs in raisedBy
-- Use the exact reviewer IDs: ${[...lastMessages.keys()].join(', ')}
+- Use the exact reviewer IDs: ${reviewerIds}
 - If a file path or line number is mentioned, include it; otherwise omit the field
 - Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only`
 
-    try {
-      this.options.onWaiting?.('structurizer')
-      const messages: Message[] = [{ role: 'user', content: prompt }]
-      const response = await this.summarizer.provider.chat(
-        messages,
-        'You extract structured issues from code review text. Output only valid JSON.',
-        { disableTools: true }  // Pure text extraction — must not trigger tool use
-      )
-      this.trackTokens('summarizer', prompt, response)
+    const systemPrompt = 'You extract structured issues from code review text. Output only valid JSON.'
+    const chatOpts = { disableTools: true }
+    const maxAttempts = 3
 
-      const parsed = parseReviewerOutput(response)
-      if (parsed && parsed.issues.length > 0) {
-        // Convert to MergedIssue format — raisedBy may already be in the JSON
-        return parsed.issues.map(issue => {
-          const raw = issue as any
-          return {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        this.options.onWaiting?.('structurizer')
+
+        let prompt: string
+        if (attempt === 1) {
+          prompt = basePrompt
+        } else {
+          // Retry: tell the AI its previous output was not valid JSON
+          prompt = `Your previous response was not valid JSON. Output ONLY a fenced JSON block with the issues array. No other text.
+
+Here are the review discussions again:
+
+${reviewText}
+
+Required JSON format:
+\`\`\`json
+{"issues": [{"severity": "critical|high|medium|low|nitpick", "category": "string", "file": "path", "title": "summary", "description": "details", "raisedBy": ["${reviewerIds.split(', ')[0]}"]}]}
+\`\`\`
+Use reviewer IDs: ${reviewerIds}`
+        }
+
+        const messages: Message[] = [{ role: 'user', content: prompt }]
+        const response = await this.summarizer.provider.chat(messages, systemPrompt, chatOpts)
+        this.trackTokens('summarizer', prompt, response)
+
+        const parsed = parseReviewerOutput(response)
+        if (parsed && parsed.issues.length > 0) {
+          return parsed.issues.map(issue => ({
             ...issue,
-            raisedBy: raw.raisedBy || ['summarizer'],
+            raisedBy: issue.raisedBy || ['summarizer'],
             descriptions: [issue.description]
-          }
-        })
+          }))
+        }
+        // Parse failed — will retry if attempts remain
+      } catch {
+        // Call failed — will retry if attempts remain
       }
-    } catch {
-      // Structurization failed — non-fatal, just skip post-processing
     }
 
     return []

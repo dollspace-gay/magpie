@@ -258,9 +258,10 @@ async function interactiveCommentReview(
     console.log(color(`  ${i + 1}/${issues.length} [${issue.severity.toUpperCase()}] ${issue.title}`))
     console.log(chalk.dim(`  ${location}  [${issue.raisedBy.join(', ')}]`))
     console.log()
-    console.log(`  ${issue.description}`)
+    // Render description as markdown for rich display (code blocks, formatting)
+    console.log(marked(fixMarkdown(issue.description)))
     if (issue.suggestedFix) {
-      console.log(chalk.green(`\n  Fix: ${issue.suggestedFix}`))
+      console.log(chalk.green(`  Fix: ${issue.suggestedFix}`))
     }
 
     const action = await new Promise<string>(resolve => {
@@ -303,15 +304,19 @@ async function interactiveCommentReview(
 
       if (issue.raisedBy.length === 1) {
         targetReviewer = reviewers.find(r => r.id === issue.raisedBy[0])
-      } else {
+      }
+
+      if (!targetReviewer && issue.raisedBy.length > 1) {
         console.log(chalk.dim(`  Found by: ${issue.raisedBy.join(', ')}`))
         const pickAnswer = await new Promise<string>(resolve => {
           rl.question(chalk.yellow(`  Discuss with whom? [${issue.raisedBy.join('/')}]: `), resolve)
         })
         targetReviewer = reviewers.find(r => r.id === pickAnswer.trim())
-        if (!targetReviewer) {
-          targetReviewer = reviewers.find(r => r.id === issue.raisedBy[0])
-        }
+      }
+
+      // Fallback to first available reviewer if raisedBy doesn't match any
+      if (!targetReviewer) {
+        targetReviewer = reviewers[0]
       }
 
       if (targetReviewer) {

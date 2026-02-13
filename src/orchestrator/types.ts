@@ -72,6 +72,7 @@ export interface ReviewIssue {
   description: string
   suggestedFix?: string
   codeSnippet?: string
+  raisedBy?: string[]  // preserved from structurizer output
 }
 
 /** Structured output from a reviewer (parsed from JSON block in response) */
