@@ -5,6 +5,12 @@ export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  // Session support: Codex CLI outputs JSONL with thread_id,
+  // and supports `codex exec resume <thread_id>` for continuing sessions
+  sessionId?: string
+  private sessionEnabled = false
+  private isFirstMessage = true
+  private sessionName?: string
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Codex CLI (uses subscription)
@@ -16,18 +22,44 @@ export class CodexCliProvider implements AIProvider {
     this.cwd = cwd
   }
 
+  startSession(name?: string): void {
+    this.sessionEnabled = true
+    this.isFirstMessage = true
+    this.sessionId = undefined  // Will be set from first response's JSONL
+    this.sessionName = name
+  }
+
+  endSession(): void {
+    this.sessionEnabled = false
+    this.isFirstMessage = true
+    this.sessionId = undefined
+    this.sessionName = undefined
+  }
+
   async chat(messages: Message[], systemPrompt?: string): Promise<string> {
-    const prompt = this.buildPrompt(messages, systemPrompt)
-    return this.runCodex(prompt)
+    // In session mode, only send the last user message (history is in session)
+    const prompt = this.sessionEnabled && !this.isFirstMessage
+      ? this.buildPromptLastOnly(messages)
+      : this.buildPrompt(messages, systemPrompt)
+    const result = await this.runCodex(prompt)
+    this.isFirstMessage = false
+    return result
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
-    const prompt = this.buildPrompt(messages, systemPrompt)
+    // In session mode, only send the last user message (history is in session)
+    const prompt = this.sessionEnabled && !this.isFirstMessage
+      ? this.buildPromptLastOnly(messages)
+      : this.buildPrompt(messages, systemPrompt)
     yield* this.runCodexStream(prompt)
+    this.isFirstMessage = false
   }
 
   private buildPrompt(messages: Message[], systemPrompt?: string): string {
     let prompt = ''
+    if (this.sessionName && this.isFirstMessage) {
+      prompt += `[${this.sessionName}]\n\n`
+    }
     if (systemPrompt) {
       prompt += `System: ${systemPrompt}\n\n`
     }
@@ -37,11 +69,46 @@ export class CodexCliProvider implements AIProvider {
     return prompt
   }
 
+  // Only get the last user message for session continuation
+  private buildPromptLastOnly(messages: Message[]): string {
+    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
+    return lastUserMsg?.content || ''
+  }
+
+  private buildArgs(): string[] {
+    const baseArgs = ['--json', '--dangerously-bypass-approvals-and-sandbox']
+    if (this.sessionEnabled && this.sessionId) {
+      // Resume existing session
+      return ['exec', 'resume', this.sessionId, ...baseArgs, '-']
+    }
+    // New session or no session
+    return ['exec', ...baseArgs, '-']
+  }
+
+  // Parse JSONL output: extract thread_id and agent_message text
+  private parseJsonlOutput(output: string): string {
+    let text = ''
+    for (const line of output.split('\n')) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+      try {
+        const event = JSON.parse(trimmed)
+        if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
+          this.sessionId = event.thread_id
+        } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
+          text += event.item.text
+        }
+      } catch {
+        // Not valid JSON, ignore
+      }
+    }
+    return text
+  }
+
   private runCodex(prompt: string): Promise<string> {
     return new Promise((resolve, reject) => {
-      // Use 'codex exec -' to read from stdin (avoids command line length limits)
-      // --dangerously-bypass-approvals-and-sandbox allows full access without prompts
-      const child = spawn('codex', ['exec', '-', '--dangerously-bypass-approvals-and-sandbox'], {
+      const args = this.buildArgs()
+      const child = spawn('codex', args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe']
       })
@@ -61,7 +128,7 @@ export class CodexCliProvider implements AIProvider {
         if (code !== 0) {
           reject(new Error(`Codex CLI exited with code ${code}: ${error}`))
         } else {
-          resolve(output.trim())
+          resolve(this.parseJsonlOutput(output))
         }
       })
 
@@ -76,19 +143,19 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private async *runCodexStream(prompt: string): AsyncGenerator<string, void, unknown> {
-    // Use 'codex exec -' to read from stdin (avoids command line length limits)
-    // --dangerously-bypass-approvals-and-sandbox allows full access without prompts
-    const child = spawn('codex', ['exec', '-', '--dangerously-bypass-approvals-and-sandbox'], {
+    const args = this.buildArgs()
+    const child = spawn('codex', args, {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe']
     })
 
     const chunks: string[] = []
-    let resolveNext: ((value: IteratorResult<string, void>) => void) | null = null
+    let resolveNext: ((value: { chunk: string | null }) => void) | null = null
     let done = false
     let error: Error | null = null
     let lastActivity = Date.now()
     let stderrOutput = ''
+    let lineBuf = ''  // Buffer for JSONL line parsing
 
     // Timeout checker - kill if no activity for too long
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
@@ -97,19 +164,41 @@ export class CodexCliProvider implements AIProvider {
         done = true
         error = new Error(`Codex CLI timed out after ${this.timeout / 1000}s of inactivity`)
         if (resolveNext) {
-          resolveNext({ value: undefined as any, done: true })
+          resolveNext({ chunk: null })
         }
       }
     }, 10000) : null  // Check every 10s
 
-    child.stdout.on('data', (data) => {
-      lastActivity = Date.now()
-      const chunk = data.toString()
+    const pushChunk = (chunk: string) => {
       if (resolveNext) {
-        resolveNext({ value: chunk, done: false })
+        resolveNext({ chunk })
         resolveNext = null
       } else {
         chunks.push(chunk)
+      }
+    }
+
+    child.stdout.on('data', (data) => {
+      lastActivity = Date.now()
+      lineBuf += data.toString()
+
+      // Parse complete JSONL lines
+      const lines = lineBuf.split('\n')
+      lineBuf = lines.pop() || ''  // Keep incomplete line in buffer
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const event = JSON.parse(trimmed)
+          if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
+            this.sessionId = event.thread_id
+          } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
+            pushChunk(event.item.text)
+          }
+        } catch {
+          // Not valid JSON, ignore
+        }
       }
     })
 
@@ -120,12 +209,25 @@ export class CodexCliProvider implements AIProvider {
 
     child.on('close', (code) => {
       if (timeoutChecker) clearInterval(timeoutChecker)
+      // Process any remaining data in line buffer
+      if (lineBuf.trim()) {
+        try {
+          const event = JSON.parse(lineBuf.trim())
+          if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
+            this.sessionId = event.thread_id
+          } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
+            pushChunk(event.item.text)
+          }
+        } catch {
+          // ignore
+        }
+      }
       done = true
       if (code !== 0 && !error) {
         error = new Error(`Codex CLI exited with code ${code}${stderrOutput ? ': ' + stderrOutput : ''}`)
       }
       if (resolveNext) {
-        resolveNext({ value: undefined as any, done: true })
+        resolveNext({ chunk: null })
       }
     })
 
@@ -134,7 +236,7 @@ export class CodexCliProvider implements AIProvider {
       done = true
       error = new Error(`Failed to run codex CLI: ${err.message}`)
       if (resolveNext) {
-        resolveNext({ value: undefined as any, done: true })
+        resolveNext({ chunk: null })
       }
     })
 
@@ -146,11 +248,11 @@ export class CodexCliProvider implements AIProvider {
       if (chunks.length > 0) {
         yield chunks.shift()!
       } else if (!done) {
-        const chunk = await new Promise<IteratorResult<string, void>>((resolve) => {
+        const result = await new Promise<{ chunk: string | null }>((resolve) => {
           resolveNext = resolve
         })
-        if (!chunk.done) {
-          yield chunk.value
+        if (result.chunk !== null) {
+          yield result.chunk
         }
       }
     }
