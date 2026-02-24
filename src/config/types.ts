@@ -38,7 +38,10 @@ export interface MagpieConfig {
     google?: ProviderConfig
     'claude-code'?: { enabled: boolean }
     'codex-cli'?: { enabled: boolean }
+    'qwen-code'?: { enabled: boolean }
+    minimax?: ProviderConfig
   }
+  mock?: boolean
   defaults: DefaultsConfig
   reviewers: Record<string, ReviewerConfig>
   summarizer: ReviewerConfig
