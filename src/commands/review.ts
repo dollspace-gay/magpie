@@ -251,6 +251,18 @@ async function interactiveCommentReview(
   process.on('unhandledRejection', rejectHandler)
 
   const approved: { issue: MergedIssue; comment: string }[] = []
+  const stats = { posted: 0, edited: 0, discussed: 0, skipped: 0 }
+
+  const showProgress = (current: number) => {
+    const done = stats.posted + stats.edited + stats.discussed + stats.skipped
+    const parts = []
+    if (stats.posted > 0) parts.push(chalk.green(`${stats.posted} posted`))
+    if (stats.edited > 0) parts.push(chalk.yellow(`${stats.edited} edited`))
+    if (stats.discussed > 0) parts.push(chalk.cyan(`${stats.discussed} discussed`))
+    if (stats.skipped > 0) parts.push(chalk.dim(`${stats.skipped} skipped`))
+    const progress = parts.length > 0 ? parts.join(', ') : 'none yet'
+    return chalk.dim(`  [${done}/${issues.length} done: ${progress}]`)
+  }
 
   console.log(chalk.cyan('\n📝 Post-processing: Review each issue before posting to GitHub'))
   console.log(chalk.dim('   [p] Post as-is  [e] Edit  [d] Discuss with reviewer  [s] Skip  [q] Stop\n'))
@@ -266,6 +278,7 @@ async function interactiveCommentReview(
     console.log(chalk.bold(`\n${'─'.repeat(50)}`))
     console.log(color(`  ${i + 1}/${issues.length} [${issue.severity.toUpperCase()}] ${issue.title}`))
     console.log(chalk.dim(`  ${location}  [${issue.raisedBy.join(', ')}]`))
+    if (i > 0) console.log(showProgress(i))
     console.log()
     // Render description as markdown for rich display (code blocks, formatting)
     console.log(marked(fixMarkdown(issue.description)))
@@ -285,6 +298,7 @@ async function interactiveCommentReview(
     }
 
     if (choice === 's' || choice === '') {
+      stats.skipped++
       console.log(chalk.dim('  Skipped.'))
       continue
     }
@@ -292,6 +306,7 @@ async function interactiveCommentReview(
     if (choice === 'p') {
       const comment = formatIssueForGitHub(issue)
       approved.push({ issue, comment })
+      stats.posted++
       console.log(chalk.green('  ✓ Will post.'))
       continue
     }
@@ -302,7 +317,10 @@ async function interactiveCommentReview(
       })
       if (edited.trim()) {
         approved.push({ issue, comment: edited.trim() })
+        stats.edited++
         console.log(chalk.green('  ✓ Will post (edited).'))
+      } else {
+        stats.skipped++
       }
       continue
     }
@@ -349,15 +367,37 @@ async function interactiveCommentReview(
         const conversationHistory: Message[] = []
         let discussionHappened = false
 
+        // Auto-explain: ask the reviewer to detail the issue before user interaction
+        {
+          const explainPrompt = `${issueContext}\n\nBefore the human asks questions, first explain this issue in detail:\n1. Where exactly is the problem? (quote the relevant code)\n2. Why is this a problem? (what could go wrong)\n3. How should it be fixed? (concrete suggestion with code)\n\nBe concise but thorough.`
+          conversationHistory.push({ role: 'user', content: explainPrompt })
+
+          let explainResponse = ''
+          if (spinnerRef.spinner) spinnerRef.spinner.stop()
+          const explainSpinner = ora({ text: `${targetReviewer.id} is explaining...`, discardStdin: false }).start()
+
+          for await (const chunk of targetReviewer.provider.chatStream(
+            conversationHistory,
+            targetReviewer.systemPrompt
+          )) {
+            explainResponse += chunk
+          }
+          explainSpinner.stop()
+          if (process.stdin.isPaused?.()) process.stdin.resume()
+
+          console.log(chalk.cyan(`\n  ${targetReviewer.id}:`))
+          console.log(marked(fixMarkdown(explainResponse)))
+          conversationHistory.push({ role: 'assistant', content: explainResponse })
+          discussionHappened = true
+        }
+
         while (true) {
           // Ensure stdin is flowing before each question (ora/spinner may have paused it)
           if (process.stdin.isPaused?.()) {
-            process.stderr.write(chalk.dim('[debug] stdin was paused, resuming\n'))
             process.stdin.resume()
           }
-          const question = await new Promise<string>((resolve, reject) => {
+          const question = await new Promise<string>((resolve) => {
             if ((rl as any).closed) {
-              process.stderr.write(chalk.red('[debug] readline is CLOSED before question!\n'))
               resolve('')
               return
             }
@@ -365,13 +405,7 @@ async function interactiveCommentReview(
           })
           if (!question.trim()) break
 
-          discussionHappened = true
-
-          // First message includes issue context; subsequent messages are just the user's words
-          const userContent = conversationHistory.length === 0
-            ? `${issueContext}\n\nHuman reviewer: ${question}`
-            : question
-          conversationHistory.push({ role: 'user', content: userContent })
+          conversationHistory.push({ role: 'user', content: question })
 
           let response = ''
           if (spinnerRef.spinner) spinnerRef.spinner.stop()
@@ -418,6 +452,7 @@ async function interactiveCommentReview(
           finalComment = finalComment.trim()
 
           if (finalComment.toUpperCase() === 'SKIP') {
+            stats.discussed++
             console.log(chalk.dim('  Issue withdrawn after discussion.'))
           } else if (finalComment) {
             const postAction = await new Promise<string>(resolve => {
@@ -426,9 +461,11 @@ async function interactiveCommentReview(
             const act = postAction.trim().toLowerCase()
             if (act === 'p') {
               approved.push({ issue, comment: finalComment })
+              stats.discussed++
               console.log(chalk.green('  ✓ Will post (revised).'))
             } else if (act === 'o') {
               approved.push({ issue, comment: formatIssueForGitHub(issue) })
+              stats.discussed++
               console.log(chalk.green('  ✓ Will post (original).'))
             } else if (act === 'e') {
               const edited = await new Promise<string>(resolve => {
@@ -436,9 +473,13 @@ async function interactiveCommentReview(
               })
               if (edited.trim()) {
                 approved.push({ issue, comment: edited.trim() })
+                stats.discussed++
                 console.log(chalk.green('  ✓ Will post (edited).'))
+              } else {
+                stats.skipped++
               }
             } else {
+              stats.skipped++
               console.log(chalk.dim('  Skipped.'))
             }
           } else {
@@ -448,6 +489,7 @@ async function interactiveCommentReview(
             })
             if (postAction.trim().toLowerCase() === 'p') {
               approved.push({ issue, comment: formatIssueForGitHub(issue) })
+              stats.discussed++
               console.log(chalk.green('  ✓ Will post.'))
             } else if (postAction.trim().toLowerCase() === 'e') {
               const edited = await new Promise<string>(resolve => {
@@ -455,9 +497,13 @@ async function interactiveCommentReview(
               })
               if (edited.trim()) {
                 approved.push({ issue, comment: edited.trim() })
+                stats.discussed++
                 console.log(chalk.green('  ✓ Will post (edited).'))
+              } else {
+                stats.skipped++
               }
             } else {
+              stats.skipped++
               console.log(chalk.dim('  Skipped.'))
             }
           }
@@ -468,6 +514,7 @@ async function interactiveCommentReview(
           })
           if (postAction.trim().toLowerCase() === 'p') {
             approved.push({ issue, comment: formatIssueForGitHub(issue) })
+            stats.discussed++
             console.log(chalk.green('  ✓ Will post.'))
           } else if (postAction.trim().toLowerCase() === 'e') {
             const edited = await new Promise<string>(resolve => {
@@ -475,9 +522,13 @@ async function interactiveCommentReview(
             })
             if (edited.trim()) {
               approved.push({ issue, comment: edited.trim() })
+              stats.discussed++
               console.log(chalk.green('  ✓ Will post (edited).'))
+            } else {
+              stats.skipped++
             }
           } else {
+            stats.skipped++
             console.log(chalk.dim('  Skipped.'))
           }
         }
