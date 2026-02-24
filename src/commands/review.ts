@@ -562,26 +562,30 @@ async function interactiveCommentReview(
 
   if (confirm.trim().toLowerCase() === 'y') {
     try {
-      const { buildPRReviewPayload, postPRReview, getPRHeadSha } = await import('../github/commenter.js')
+      const { postComment, getPRHeadSha } = await import('../github/commenter.js')
       const headSha = getPRHeadSha(prNumber)
-      const overallVerdict = approved.some(a => a.issue.severity === 'critical' || a.issue.severity === 'high')
-        ? 'request_changes' : 'comment'
-      const payload = buildPRReviewPayload(
-        approved.map(a => a.issue),
-        overallVerdict,
-        headSha
-      )
-      // Override comments with user-edited text
-      payload.comments = approved
-        .filter(a => a.issue.line != null)
-        .map(a => ({ path: a.issue.file, line: a.issue.line!, body: a.comment }))
-      payload.body = approved
-        .filter(a => a.issue.line == null)
-        .map(a => a.comment)
-        .join('\n\n---\n\n')
+      let posted = 0
+      let failed = 0
 
-      postPRReview(prNumber, payload)
-      console.log(chalk.green(`\n  ✓ Posted ${approved.length} comments to PR #${prNumber}`))
+      for (const { issue, comment } of approved) {
+        const location = issue.line ? `${issue.file}:${issue.line}` : issue.file
+        const result = postComment(prNumber, {
+          path: issue.file,
+          line: issue.line,
+          body: comment,
+          commitSha: headSha,
+        })
+        if (result.success) {
+          posted++
+          const mode = result.inline ? 'inline' : 'comment'
+          console.log(chalk.green(`  ✓ ${location} (${mode})`))
+        } else {
+          failed++
+          console.log(chalk.red(`  ✗ ${location}: ${result.error}`))
+        }
+      }
+
+      console.log(chalk.green(`\n  Done: ${posted} posted${failed > 0 ? chalk.red(`, ${failed} failed`) : ''}`))
     } catch (error) {
       console.error(chalk.red(`\n  Failed to post: ${error instanceof Error ? error.message : error}`))
     }

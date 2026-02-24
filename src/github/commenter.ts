@@ -1,58 +1,10 @@
 // src/github/commenter.ts
 import { execSync } from 'child_process'
-import type { MergedIssue } from '../orchestrator/types.js'
 
-interface PRReviewComment {
-  path: string
-  line: number
-  body: string
-}
-
-interface PRReviewPayload {
-  body: string
-  event: 'APPROVE' | 'REQUEST_CHANGES' | 'COMMENT'
-  comments: PRReviewComment[]
-  commit_id: string
-}
-
-/**
- * Build a GitHub PR review payload from merged issues.
- */
-export function buildPRReviewPayload(
-  issues: MergedIssue[],
-  verdict: string,
-  commitSha: string
-): PRReviewPayload {
-  const inlineIssues = issues.filter(i => i.line != null)
-  const bodyIssues = issues.filter(i => i.line == null)
-
-  const comments: PRReviewComment[] = inlineIssues.map(issue => ({
-    path: issue.file,
-    line: issue.line!,
-    body: formatIssueComment(issue)
-  }))
-
-  let body = ''
-  if (bodyIssues.length > 0) {
-    body = '## Magpie Review Issues\n\n' +
-      bodyIssues.map(issue => formatIssueComment(issue)).join('\n\n---\n\n')
-  }
-
-  const event = verdict === 'approve' ? 'APPROVE'
-    : verdict === 'request_changes' ? 'REQUEST_CHANGES'
-    : 'COMMENT'
-
-  return { body, event, comments, commit_id: commitSha }
-}
-
-function formatIssueComment(issue: MergedIssue): string {
-  const severity = issue.severity.toUpperCase()
-  let comment = `**[${severity}]** ${issue.title}\n\n${issue.description}`
-  if (issue.suggestedFix) {
-    comment += `\n\n**Suggested fix:** ${issue.suggestedFix}`
-  }
-  comment += `\n\n_Found by: ${issue.raisedBy.join(', ')} via Magpie_`
-  return comment
+interface CommentResult {
+  success: boolean
+  inline: boolean
+  error?: string
 }
 
 function validatePRNumber(prNumber: string): void {
@@ -61,24 +13,11 @@ function validatePRNumber(prNumber: string): void {
   }
 }
 
-/**
- * Post a PR review to GitHub using gh CLI.
- */
-export function postPRReview(
-  prNumber: string,
-  payload: PRReviewPayload
-): void {
-  validatePRNumber(prNumber)
-  const jsonPayload = JSON.stringify(payload)
+function getRepo(): string {
   const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
   const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
   if (!repoMatch) throw new Error('Could not detect GitHub repo from git remote')
-
-  const repo = repoMatch[1]
-  execSync(
-    `gh api repos/${repo}/pulls/${prNumber}/reviews --input -`,
-    { input: jsonPayload, encoding: 'utf-8' }
-  )
+  return repoMatch[1]
 }
 
 /**
@@ -91,4 +30,49 @@ export function getPRHeadSha(prNumber: string): string {
     { encoding: 'utf-8' }
   )
   return result.trim()
+}
+
+/**
+ * Post a single inline comment on a specific line of a PR.
+ * Falls back to a regular PR comment if the line is not in the diff.
+ */
+export function postComment(
+  prNumber: string,
+  opts: { path: string; line?: number; body: string; commitSha: string }
+): CommentResult {
+  validatePRNumber(prNumber)
+  const repo = getRepo()
+
+  // Try inline comment first if we have a line number
+  if (opts.line != null) {
+    try {
+      const payload = JSON.stringify({
+        body: opts.body,
+        commit_id: opts.commitSha,
+        path: opts.path,
+        line: opts.line,
+        side: 'RIGHT',
+      })
+      execSync(
+        `gh api repos/${repo}/pulls/${prNumber}/comments --input -`,
+        { input: payload, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+      )
+      return { success: true, inline: true }
+    } catch {
+      // Line not in diff — fall back to regular comment with file/line context
+    }
+  }
+
+  // Regular PR comment (not inline)
+  const location = opts.line ? `**${opts.path}:${opts.line}**\n\n` : `**${opts.path}**\n\n`
+  const body = location + opts.body
+  try {
+    execSync(
+      `gh pr comment ${prNumber} --body-file -`,
+      { input: body, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    )
+    return { success: true, inline: false }
+  } catch (e: any) {
+    return { success: false, inline: false, error: e.message?.slice(0, 200) }
+  }
 }
