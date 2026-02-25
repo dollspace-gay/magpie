@@ -14,6 +14,7 @@ import type { ContextGatherer } from '../context-gatherer/gatherer.js'
 import type { GatheredContext } from '../context-gatherer/types.js'
 import { parseReviewerOutput, parseFocusAreas } from './issue-parser.js'
 import { formatCallChainForReviewer } from '../context-gatherer/collectors/reference-collector.js'
+import { logger } from '../utils/logger.js'
 
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
@@ -42,9 +43,10 @@ export class DebateOrchestrator {
     this.options = options
   }
 
-  // Estimate tokens from text (~4 chars per token)
+  // Estimate tokens from text (CJK ~0.7 tokens/char, English ~0.25 tokens/char)
   private estimateTokens(text: string): number {
-    return Math.ceil(text.length / 4)
+    const cjkCount = (text.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) || []).length
+    return Math.ceil(cjkCount * 0.7 + (text.length - cjkCount) / 4)
   }
 
   private trackTokens(reviewerId: string, input: string, output: string) {
@@ -164,78 +166,86 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
     this.taskPrompt = prompt
     let convergedAtRound: number | undefined
 
-    // Run pre-analysis first and store it
-    this.analysis = await this.preAnalyze(prompt)
+    try {
+      // Run pre-analysis first and store it
+      this.analysis = await this.preAnalyze(prompt)
 
-    // Run debate rounds
-    for (let round = 1; round <= this.options.maxRounds; round++) {
-      for (const reviewer of this.reviewers) {
-        // Check for user interruption in interactive mode
-        if (this.options.interactive && this.options.onInteractive) {
-          const userInput = await this.options.onInteractive()
-          if (userInput === 'q') {
-            break
+      // Run debate rounds
+      for (let round = 1; round <= this.options.maxRounds; round++) {
+        for (const reviewer of this.reviewers) {
+          // Check for user interruption in interactive mode
+          if (this.options.interactive && this.options.onInteractive) {
+            const userInput = await this.options.onInteractive()
+            if (userInput === 'q') {
+              break
+            }
+            if (userInput) {
+              this.conversationHistory.push({
+                reviewerId: 'user',
+                content: userInput,
+                timestamp: new Date()
+              })
+            }
           }
-          if (userInput) {
-            this.conversationHistory.push({
-              reviewerId: 'user',
-              content: userInput,
-              timestamp: new Date()
-            })
+
+          const messages = this.buildMessages(reviewer.id)
+          const response = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+
+          const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+          this.trackTokens(reviewer.id, inputText, response)
+
+          this.conversationHistory.push({
+            reviewerId: reviewer.id,
+            content: response,
+            timestamp: new Date()
+          })
+          this.markAsSeen(reviewer.id)
+
+          this.options.onMessage?.(reviewer.id, response)
+        }
+
+        // Check convergence if enabled
+        let converged = false
+        if (this.options.checkConvergence && round < this.options.maxRounds) {
+          converged = await this.checkConvergence()
+          if (converged) {
+            convergedAtRound = round
           }
         }
 
-        const messages = this.buildMessages(reviewer.id)
-        const response = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+        this.options.onRoundComplete?.(round, converged)
 
-        const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-        this.trackTokens(reviewer.id, inputText, response)
-
-        this.conversationHistory.push({
-          reviewerId: reviewer.id,
-          content: response,
-          timestamp: new Date()
-        })
-        this.markAsSeen(reviewer.id)
-
-        this.options.onMessage?.(reviewer.id, response)
-      }
-
-      // Check convergence if enabled
-      let converged = false
-      if (this.options.checkConvergence && round < this.options.maxRounds) {
-        converged = await this.checkConvergence()
         if (converged) {
-          convergedAtRound = round
+          break
         }
       }
 
-      this.options.onRoundComplete?.(round, converged)
+      // Collect summaries from each reviewer
+      const summaries = await this.collectSummaries()
 
-      if (converged) {
-        break
+      // Get final conclusion from summarizer
+      const finalConclusion = await this.getFinalConclusion(summaries)
+
+      // End summarizer session for clean JSON extraction call
+      this.summarizer.provider.endSession?.()
+      const parsedIssues = await this.extractIssues()
+
+      return {
+        prNumber: label,
+        analysis: this.analysis,
+        messages: this.conversationHistory,
+        summaries,
+        finalConclusion,
+        tokenUsage: this.getTokenUsage(),
+        convergedAtRound,
+        ...(parsedIssues.length > 0 ? { parsedIssues } : {})
       }
-    }
-
-    // Collect summaries from each reviewer
-    const summaries = await this.collectSummaries()
-
-    // Get final conclusion from summarizer
-    const finalConclusion = await this.getFinalConclusion(summaries)
-
-    // End summarizer session for clean JSON extraction call
-    this.summarizer.provider.endSession?.()
-    const parsedIssues = await this.extractIssues()
-
-    return {
-      prNumber: label,
-      analysis: this.analysis,
-      messages: this.conversationHistory,
-      summaries,
-      finalConclusion,
-      tokenUsage: this.getTokenUsage(),
-      convergedAtRound,
-      ...(parsedIssues.length > 0 ? { parsedIssues } : {})
+    } finally {
+      for (const reviewer of this.reviewers) {
+        reviewer.provider.endSession?.()
+      }
+      this.analyzer.provider.endSession?.()
+      this.summarizer.provider.endSession?.()
     }
   }
 
@@ -264,7 +274,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
               const diff = this.extractDiffFromPrompt(prompt)
               this.gatheredContext = await this.contextGatherer!.gather(diff, label, 'main')
             } catch (error) {
-              console.warn('Context gathering failed:', error)
+              logger.warn('Context gathering failed:', error)
             }
           })()
         : Promise.resolve()

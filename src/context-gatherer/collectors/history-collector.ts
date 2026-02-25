@@ -90,7 +90,7 @@ export function getPRDetails(prNumber: number, cwd: string = process.cwd()): Rel
       title: data.title,
       author: data.author?.login || 'unknown',
       mergedAt: data.mergedAt || '',
-      overlappingFiles: data.files?.map((f: any) => f.path) || [],
+      overlappingFiles: data.files?.map((f: Record<string, unknown>) => f.path as string) || [],
       relevance: 'direct'
     }
   } catch {

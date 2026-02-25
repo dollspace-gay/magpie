@@ -1,14 +1,14 @@
 import { spawn } from 'child_process'
-import { randomUUID } from 'crypto'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
+import { CliSessionHelper } from './session-helper.js'
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
-  sessionId?: string
-  private isFirstMessage: boolean = true
-  private sessionName?: string
+  private session = new CliSessionHelper()
+
+  get sessionId() { return this.session.sessionId }
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Claude Code CLI
@@ -22,54 +22,28 @@ export class ClaudeCodeProvider implements AIProvider {
   }
 
   startSession(name?: string): void {
-    this.sessionId = randomUUID()
-    this.isFirstMessage = true
-    this.sessionName = name
+    this.session.start(name)
   }
 
   endSession(): void {
-    this.sessionId = undefined
-    this.isFirstMessage = true
-    this.sessionName = undefined
+    this.session.end()
   }
 
   async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
-    // In session mode, only send the last user message (history is in session)
-    const prompt = this.sessionId && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.session.shouldSendFullHistory()
+      ? this.session.buildPrompt(messages, systemPrompt)
+      : this.session.buildPromptLastOnly(messages)
     const result = await this.runClaude(prompt, systemPrompt, options)
-    this.isFirstMessage = false
+    this.session.markMessageSent()
     return result
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
-    // In session mode, only send the last user message (history is in session)
-    const prompt = this.sessionId && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.session.shouldSendFullHistory()
+      ? this.session.buildPrompt(messages, systemPrompt)
+      : this.session.buildPromptLastOnly(messages)
     yield* this.runClaudeStream(prompt, systemPrompt)
-    this.isFirstMessage = false
-  }
-
-  private buildPrompt(messages: Message[], systemPrompt?: string): string {
-    let prompt = ''
-    if (this.sessionName && this.isFirstMessage) {
-      prompt += `[${this.sessionName}]\n\n`
-    }
-    if (systemPrompt) {
-      prompt += `System: ${systemPrompt}\n\n`
-    }
-    for (const msg of messages) {
-      prompt += `${msg.role}: ${msg.content}\n\n`
-    }
-    return prompt
-  }
-
-  // Only get the last user message for session continuation
-  private buildPromptLastOnly(messages: Message[]): string {
-    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-    return lastUserMsg?.content || ''
+    this.session.markMessageSent()
   }
 
   private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
@@ -82,14 +56,14 @@ export class ClaudeCodeProvider implements AIProvider {
       if (options?.disableTools) {
         args.push('--tools', '')
       }
-      if (this.sessionId) {
-        if (this.isFirstMessage) {
-          args.push('--session-id', this.sessionId)
+      if (this.session.sessionId) {
+        if (this.session.isFirstMessage) {
+          args.push('--session-id', this.session.sessionId)
           if (systemPrompt) {
             args.push('--system-prompt', systemPrompt)
           }
         } else {
-          args.push('--resume', this.sessionId)
+          args.push('--resume', this.session.sessionId)
         }
       }
 
@@ -131,14 +105,14 @@ export class ClaudeCodeProvider implements AIProvider {
     // Build args based on session state
     // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
     const args = ['-p', '-', '--dangerously-skip-permissions']
-    if (this.sessionId) {
-      if (this.isFirstMessage) {
-        args.push('--session-id', this.sessionId)
+    if (this.session.sessionId) {
+      if (this.session.isFirstMessage) {
+        args.push('--session-id', this.session.sessionId)
         if (systemPrompt) {
           args.push('--system-prompt', systemPrompt)
         }
       } else {
-        args.push('--resume', this.sessionId)
+        args.push('--resume', this.session.sessionId)
       }
     }
 

@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
+import { withRetry } from '../utils/retry.js'
 
 export class AnthropicProvider implements AIProvider {
   name = 'anthropic'
@@ -12,15 +13,17 @@ export class AnthropicProvider implements AIProvider {
   }
 
   async chat(messages: Message[], systemPrompt?: string): Promise<string> {
-    const response = await this.client.messages.create({
-      model: this.model,
-      max_tokens: 4096,
-      system: systemPrompt,
-      messages: messages.map(m => ({
-        role: m.role === 'system' ? 'user' : m.role,
-        content: m.content
-      }))
-    })
+    const response = await withRetry(() =>
+      this.client.messages.create({
+        model: this.model,
+        max_tokens: 4096,
+        system: systemPrompt,
+        messages: messages.map(m => ({
+          role: m.role === 'system' ? 'user' : m.role,
+          content: m.content
+        }))
+      })
+    )
 
     const textBlock = response.content.find(block => block.type === 'text')
     return textBlock?.type === 'text' ? textBlock.text : ''

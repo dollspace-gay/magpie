@@ -34,25 +34,29 @@ export function parseReviewerOutput(response: string): ReviewerOutput | null {
       ? parsed.verdict : 'comment'
 
     const issues: ReviewIssue[] = parsed.issues
-      .filter((issue: any) =>
+      .filter((issue: Record<string, unknown>) =>
         typeof issue === 'object' &&
-        VALID_SEVERITIES.includes(issue.severity) &&
+        VALID_SEVERITIES.includes(issue.severity as typeof VALID_SEVERITIES[number]) &&
         typeof issue.file === 'string' &&
-        typeof issue.title === 'string' &&
-        typeof issue.description === 'string'
+        typeof issue.title === 'string' && (issue.title as string).trim().length > 0 &&
+        typeof issue.description === 'string' && (issue.description as string).trim().length > 0
       )
-      .map((issue: any) => ({
-        severity: issue.severity,
-        category: typeof issue.category === 'string' ? issue.category : 'general',
-        file: issue.file,
-        line: typeof issue.line === 'number' ? issue.line : undefined,
-        endLine: typeof issue.endLine === 'number' ? issue.endLine : undefined,
-        title: issue.title,
-        description: issue.description,
-        suggestedFix: typeof issue.suggestedFix === 'string' ? issue.suggestedFix : undefined,
-        codeSnippet: typeof issue.codeSnippet === 'string' ? issue.codeSnippet : undefined,
-        raisedBy: Array.isArray(issue.raisedBy) ? issue.raisedBy : undefined
-      }))
+      .map((issue: Record<string, unknown>) => {
+        const line = typeof issue.line === 'number' && issue.line > 0 ? issue.line : undefined
+        const endLine = typeof issue.endLine === 'number' && issue.endLine > 0 ? issue.endLine : undefined
+        return {
+          severity: issue.severity as ReviewIssue['severity'],
+          category: typeof issue.category === 'string' ? issue.category : 'general',
+          file: issue.file as string,
+          line,
+          endLine: line != null && endLine != null && endLine >= line ? endLine : undefined,
+          title: (issue.title as string).trim(),
+          description: (issue.description as string).trim(),
+          suggestedFix: typeof issue.suggestedFix === 'string' ? issue.suggestedFix : undefined,
+          codeSnippet: typeof issue.codeSnippet === 'string' ? issue.codeSnippet : undefined,
+          raisedBy: Array.isArray(issue.raisedBy) ? issue.raisedBy as string[] : undefined
+        }
+      })
 
     return { issues, verdict, summary: parsed.summary || '' }
   } catch {
@@ -113,22 +117,48 @@ export function parseFocusAreas(analysis: string): string[] {
     .filter(line => line.length > 0)
 }
 
+const STOP_WORDS = new Set(['the', 'a', 'in', 'of', 'is', 'to', 'and', 'for', 'with', 'this', 'that', 'it'])
+
+function filterStopWords(words: string[]): string[] {
+  return words.filter(w => w.length > 0 && !STOP_WORDS.has(w))
+}
+
+function jaccardSimilarity(a: string[], b: string[]): number {
+  const setA = new Set(a)
+  const setB = new Set(b)
+  const intersection = [...setA].filter(w => setB.has(w))
+  const union = new Set([...setA, ...setB])
+  return union.size === 0 ? 0 : intersection.length / union.size
+}
+
+/** Check if two line ranges overlap or are within proximity */
+function linesOverlap(a: ReviewIssue, b: ReviewIssue): boolean {
+  if (a.line == null || b.line == null) return true // No line info → don't reject
+  const aStart = a.line
+  const aEnd = a.endLine ?? a.line
+  const bStart = b.line
+  const bEnd = b.endLine ?? b.line
+  // Overlap or within 5 lines of each other
+  return aStart <= bEnd + 5 && bStart <= aEnd + 5
+}
+
 /** Check if two issues are similar enough to merge */
 function isSimilarIssue(a: ReviewIssue, b: ReviewIssue): boolean {
   // Must be same file
   if (a.file !== b.file) return false
 
-  // If both have line numbers, check proximity (within 5 lines)
-  if (a.line != null && b.line != null) {
-    if (Math.abs(a.line - b.line) > 5) return false
-  }
+  // Check line range overlap
+  if (!linesOverlap(a, b)) return false
 
-  // Check title similarity (simple word overlap)
-  const wordsA = new Set(a.title.toLowerCase().split(/\s+/))
-  const wordsB = new Set(b.title.toLowerCase().split(/\s+/))
-  const intersection = [...wordsA].filter(w => wordsB.has(w))
-  const union = new Set([...wordsA, ...wordsB])
-  const similarity = intersection.length / union.size
+  // Check title similarity (with stop words filtered)
+  const wordsA = filterStopWords(a.title.toLowerCase().split(/\s+/))
+  const wordsB = filterStopWords(b.title.toLowerCase().split(/\s+/))
+  const titleSim = jaccardSimilarity(wordsA, wordsB)
 
-  return similarity > 0.4
+  // Check description similarity (first 50 words)
+  const descWordsA = filterStopWords(a.description.toLowerCase().split(/\s+/).slice(0, 50))
+  const descWordsB = filterStopWords(b.description.toLowerCase().split(/\s+/).slice(0, 50))
+  const descSim = jaccardSimilarity(descWordsA, descWordsB)
+
+  return titleSim * 0.7 + descSim * 0.3 > 0.35
 }

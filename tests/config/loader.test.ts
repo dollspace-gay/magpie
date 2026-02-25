@@ -47,6 +47,9 @@ reviewers:
 summarizer:
   model: claude-sonnet-4-20250514
   prompt: Summarizer prompt
+analyzer:
+  model: claude-sonnet-4-20250514
+  prompt: Analyzer prompt
 `)
       const config = loadConfig(configPath)
       expect(config.defaults.max_rounds).toBe(3)

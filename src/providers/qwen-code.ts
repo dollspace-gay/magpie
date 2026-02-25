@@ -1,14 +1,15 @@
 import { spawn } from 'child_process'
-import { randomUUID } from 'crypto'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
+import { CliSessionHelper } from './session-helper.js'
+import { logger } from '../utils/logger.js'
 
 export class QwenCodeProvider implements AIProvider {
   name = 'qwen-code'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
-  sessionId?: string
-  private isFirstMessage: boolean = true
-  private sessionName?: string
+  private session = new CliSessionHelper()
+
+  get sessionId() { return this.session.sessionId }
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Qwen Code CLI (uses OAuth)
@@ -21,54 +22,28 @@ export class QwenCodeProvider implements AIProvider {
   }
 
   startSession(name?: string): void {
-    this.sessionId = randomUUID()
-    this.isFirstMessage = true
-    this.sessionName = name
+    this.session.start(name)
   }
 
   endSession(): void {
-    this.sessionId = undefined
-    this.isFirstMessage = true
-    this.sessionName = undefined
+    this.session.end()
   }
 
   async chat(messages: Message[], systemPrompt?: string, options?: ChatOptions): Promise<string> {
-    // In session mode, only send the last user message (history is in session)
-    const prompt = this.sessionId && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.session.shouldSendFullHistory()
+      ? this.session.buildPrompt(messages, systemPrompt)
+      : this.session.buildPromptLastOnly(messages)
     const result = await this.runQwen(prompt, systemPrompt, options)
-    this.isFirstMessage = false
+    this.session.markMessageSent()
     return result
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
-    // In session mode, only send the last user message (history is in session)
-    const prompt = this.sessionId && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.session.shouldSendFullHistory()
+      ? this.session.buildPrompt(messages, systemPrompt)
+      : this.session.buildPromptLastOnly(messages)
     yield* this.runQwenStream(prompt, systemPrompt)
-    this.isFirstMessage = false
-  }
-
-  private buildPrompt(messages: Message[], systemPrompt?: string): string {
-    let prompt = ''
-    if (this.sessionName && this.isFirstMessage) {
-      prompt += `[${this.sessionName}]\n\n`
-    }
-    if (systemPrompt) {
-      prompt += `System: ${systemPrompt}\n\n`
-    }
-    for (const msg of messages) {
-      prompt += `${msg.role}: ${msg.content}\n\n`
-    }
-    return prompt
-  }
-
-  // Only get the last user message for session continuation
-  private buildPromptLastOnly(messages: Message[]): string {
-    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-    return lastUserMsg?.content || ''
+    this.session.markMessageSent()
   }
 
   private runQwen(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
@@ -76,8 +51,6 @@ export class QwenCodeProvider implements AIProvider {
       // qwen -p - reads from stdin; -y auto-approves; text output
       // Limit session turns to prevent autonomous tool abuse (e.g., fetching GitHub data that leaks revert info)
       const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
-      console.error(`[qwen-code] runQwen: prompt_len=${prompt.length} cwd=${this.cwd} first200="${prompt.slice(0, 200)}"`)
-
       const child = spawn('qwen', args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -96,7 +69,7 @@ export class QwenCodeProvider implements AIProvider {
 
       child.on('close', (code) => {
         if (code !== 0) {
-          console.error(`[qwen-code] exit=${code} stderr=${error.slice(0, 500)} stdout_len=${output.length} prompt_len=${prompt.length}`)
+          logger.debug(`[qwen-code] exit=${code} stderr=${error.slice(0, 500)}`)
           reject(new Error(`Qwen CLI exited with code ${code}: ${error}`))
         } else {
           resolve(output.trim())

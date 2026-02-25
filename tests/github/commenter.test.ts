@@ -1,87 +1,173 @@
 // tests/github/commenter.test.ts
-import { describe, it, expect } from 'vitest'
-import { buildPRReviewPayload, getPRHeadSha, postPRReview } from '../../src/github/commenter'
-import type { MergedIssue } from '../../src/orchestrator/types'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { getPRHeadSha, classifyComments, postReview } from '../../src/github/commenter'
 
-describe('buildPRReviewPayload', () => {
-  it('should build inline comments for issues with file+line', () => {
-    const issues: MergedIssue[] = [{
-      severity: 'high',
-      category: 'security',
-      file: 'src/auth.ts',
-      line: 42,
-      title: 'SQL injection',
-      description: 'Unsafe query',
-      raisedBy: ['claude'],
-      descriptions: ['Unsafe query']
-    }]
-    const payload = buildPRReviewPayload(issues, 'request_changes', 'HEAD_SHA')
-    expect(payload.event).toBe('REQUEST_CHANGES')
-    expect(payload.comments).toHaveLength(1)
-    expect(payload.comments[0].path).toBe('src/auth.ts')
-    expect(payload.comments[0].line).toBe(42)
-  })
+// Mock child_process — all exported functions use execSync
+vi.mock('child_process', () => ({
+  execSync: vi.fn()
+}))
 
-  it('should put issues without line in body', () => {
-    const issues: MergedIssue[] = [{
-      severity: 'medium',
-      category: 'architecture',
-      file: 'src/api.ts',
-      title: 'Missing abstraction',
-      description: 'Should use repository pattern',
-      raisedBy: ['gemini'],
-      descriptions: ['Should use repository pattern']
-    }]
-    const payload = buildPRReviewPayload(issues, 'comment', 'HEAD_SHA')
-    expect(payload.comments).toHaveLength(0)
-    expect(payload.body).toContain('Missing abstraction')
-  })
+import { execSync } from 'child_process'
 
-  it('should map verdict to GitHub event', () => {
-    const payload = buildPRReviewPayload([], 'approve', 'SHA')
-    expect(payload.event).toBe('APPROVE')
-  })
-
-  it('should include suggested fix when available', () => {
-    const issues: MergedIssue[] = [{
-      severity: 'high',
-      category: 'security',
-      file: 'src/auth.ts',
-      line: 10,
-      title: 'Bug',
-      description: 'Details',
-      suggestedFix: 'Use parameterized queries',
-      raisedBy: ['claude'],
-      descriptions: ['Details']
-    }]
-    const payload = buildPRReviewPayload(issues, 'comment', 'SHA')
-    expect(payload.comments[0].body).toContain('parameterized queries')
-  })
-
-  it('should include reviewer attribution', () => {
-    const issues: MergedIssue[] = [{
-      severity: 'low',
-      category: 'style',
-      file: 'src/utils.ts',
-      line: 5,
-      title: 'Style issue',
-      description: 'Naming',
-      raisedBy: ['claude', 'gemini'],
-      descriptions: ['Naming']
-    }]
-    const payload = buildPRReviewPayload(issues, 'comment', 'SHA')
-    expect(payload.comments[0].body).toContain('claude')
-    expect(payload.comments[0].body).toContain('gemini')
+beforeEach(() => {
+  vi.resetAllMocks()
+  // Default: getRepo returns a repo string
+  vi.mocked(execSync).mockImplementation((cmd: string) => {
+    if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+      return 'https://github.com/owner/repo.git'
+    }
+    return ''
   })
 })
 
-describe('PR number validation', () => {
-  it('should reject non-numeric PR numbers in getPRHeadSha', () => {
+describe('getPRHeadSha', () => {
+  it('returns head SHA for valid PR number', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('headRefOid')) return 'abc123\n'
+      return 'https://github.com/owner/repo.git'
+    })
+    expect(getPRHeadSha('42')).toBe('abc123')
+  })
+
+  it('rejects non-numeric PR numbers', () => {
     expect(() => getPRHeadSha('123; rm -rf /')).toThrow('Invalid PR number')
   })
 
-  it('should reject non-numeric PR numbers in postPRReview', () => {
-    const payload = buildPRReviewPayload([], 'approve', 'SHA')
-    expect(() => postPRReview('abc', payload)).toThrow('Invalid PR number')
+  it('rejects alphabetic PR numbers', () => {
+    expect(() => getPRHeadSha('abc')).toThrow('Invalid PR number')
+  })
+})
+
+describe('classifyComments', () => {
+  it('classifies inline comments when line is in diff', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (typeof cmd === 'string' && cmd.includes('/files')) {
+        return JSON.stringify([{
+          filename: 'src/auth.ts',
+          patch: '@@ -1,3 +1,5 @@\n context\n+added line 2\n+added line 3\n context\n context'
+        }])
+      }
+      return ''
+    })
+
+    const result = classifyComments('1', [
+      { path: 'src/auth.ts', line: 2, body: 'issue here' }
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].mode).toBe('inline')
+  })
+
+  it('classifies file-level when line not in diff', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (typeof cmd === 'string' && cmd.includes('/files')) {
+        return JSON.stringify([{
+          filename: 'src/auth.ts',
+          patch: '@@ -1,3 +1,3 @@\n context\n-old\n+new\n context'
+        }])
+      }
+      return ''
+    })
+
+    const result = classifyComments('1', [
+      { path: 'src/auth.ts', line: 999, body: 'not on diff' }
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].mode).toBe('file')
+  })
+
+  it('classifies global when file not in diff', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (typeof cmd === 'string' && cmd.includes('/files')) {
+        return JSON.stringify([{
+          filename: 'src/other.ts',
+          patch: '@@ -1,3 +1,3 @@\n context'
+        }])
+      }
+      return ''
+    })
+
+    const result = classifyComments('1', [
+      { path: 'src/missing.ts', line: 10, body: 'file not in PR' }
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].mode).toBe('global')
+  })
+
+  it('rejects non-numeric PR numbers', () => {
+    expect(() => classifyComments('abc', [])).toThrow('Invalid PR number')
+  })
+})
+
+describe('postReview', () => {
+  it('rejects non-numeric PR numbers', () => {
+    expect(() => postReview('abc', [], 'SHA')).toThrow('Invalid PR number')
+  })
+
+  it('posts inline comments via reviews API', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (typeof cmd === 'string' && cmd.includes('/comments --paginate')) {
+        return ''
+      }
+      if (typeof cmd === 'string' && cmd.includes('/reviews')) {
+        return '{}'
+      }
+      return ''
+    })
+
+    const classified = [
+      { input: { path: 'src/auth.ts', line: 10, body: 'fix this' }, mode: 'inline' as const }
+    ]
+    const result = postReview('1', classified, 'SHA123')
+    expect(result.posted).toBe(1)
+    expect(result.inline).toBe(1)
+    expect(result.failed).toBe(0)
+  })
+
+  it('skips duplicate comments', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (typeof cmd === 'string' && cmd.includes('/comments --paginate')) {
+        return '{"path":"src/auth.ts","line":10,"body":"fix this already posted"}'
+      }
+      return ''
+    })
+
+    const classified = [
+      { input: { path: 'src/auth.ts', line: 10, body: 'fix this already posted' }, mode: 'inline' as const }
+    ]
+    const result = postReview('1', classified, 'SHA123')
+    expect(result.skipped).toBe(1)
+    expect(result.posted).toBe(0)
+  })
+
+  it('reports empty result when no comments', () => {
+    vi.mocked(execSync).mockImplementation((cmd: string) => {
+      if (typeof cmd === 'string' && cmd.includes('git remote get-url')) {
+        return 'https://github.com/owner/repo.git'
+      }
+      if (typeof cmd === 'string' && cmd.includes('/comments --paginate')) {
+        return ''
+      }
+      return ''
+    })
+
+    const result = postReview('1', [], 'SHA')
+    expect(result.posted).toBe(0)
+    expect(result.failed).toBe(0)
+    expect(result.details).toHaveLength(0)
   })
 })

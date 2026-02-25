@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
+import { withRetry } from '../utils/retry.js'
 
 export class OpenAIProvider implements AIProvider {
   name = 'openai'
@@ -23,10 +24,12 @@ export class OpenAIProvider implements AIProvider {
       content: m.content
     })))
 
-    const response = await this.client.chat.completions.create({
-      model: this.model,
-      messages: msgs
-    })
+    const response = await withRetry(() =>
+      this.client.chat.completions.create({
+        model: this.model,
+        messages: msgs
+      })
+    )
 
     return response.choices[0]?.message?.content || ''
   }

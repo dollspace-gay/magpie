@@ -4,6 +4,7 @@ import ora from 'ora'
 import crypto from 'crypto'
 import { readFileSync, existsSync, writeFileSync } from 'fs'
 import { loadConfig } from '../config/loader.js'
+import type { MagpieConfig } from '../config/types.js'
 import { createProvider } from '../providers/factory.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
 import type { Reviewer, DebateResult, ReviewerStatus } from '../orchestrator/types.js'
@@ -18,6 +19,7 @@ marked.setOptions({
   renderer: new TerminalRenderer({
     reflowText: true,
     width: 80,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- TerminalRenderer type mismatch with marked
   }) as any
 })
 
@@ -189,7 +191,7 @@ async function runDiscussion(
   topic: string,
   prompt: string,
   selectedIds: string[],
-  config: any,
+  config: MagpieConfig,
   options: DiscussOptions,
   spinner: ReturnType<typeof ora>
 ): Promise<{ result: DebateResult }> {
@@ -533,7 +535,7 @@ export const discussCommand = new Command('discuss')
 async function interactiveFollowUp(
   session: DiscussSession,
   selectedIds: string[],
-  config: any,
+  config: MagpieConfig,
   options: DiscussOptions,
   stateManager: StateManager,
   spinner: ReturnType<typeof ora>
@@ -603,7 +605,7 @@ async function handleResume(
   sessionId: string,
   newTopic: string | undefined,
   stateManager: StateManager,
-  config: any,
+  config: MagpieConfig,
   options: DiscussOptions,
   spinner: ReturnType<typeof ora>
 ): Promise<void> {

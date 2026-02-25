@@ -1,5 +1,6 @@
 import { GoogleGenerativeAI } from '@google/generative-ai'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
+import { withRetry } from '../utils/retry.js'
 
 export class GeminiProvider implements AIProvider {
   name = 'gemini'
@@ -26,7 +27,7 @@ export class GeminiProvider implements AIProvider {
     const chat = model.startChat({ history })
 
     const lastMessage = messages[messages.length - 1]
-    const result = await chat.sendMessage(lastMessage.content)
+    const result = await withRetry(() => chat.sendMessage(lastMessage.content))
     return result.response.text()
   }
 

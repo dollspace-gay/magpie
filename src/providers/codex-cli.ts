@@ -1,16 +1,16 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
+import { CliSessionHelper } from './session-helper.js'
 
 export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
-  // Session support: Codex CLI outputs JSONL with thread_id,
-  // and supports `codex exec resume <thread_id>` for continuing sessions
-  sessionId?: string
+  private session = new CliSessionHelper()
+  // Codex gets its session ID from the first response (thread_id in JSONL)
   private sessionEnabled = false
-  private isFirstMessage = true
-  private sessionName?: string
+
+  get sessionId() { return this.session.sessionId }
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Codex CLI (uses subscription)
@@ -24,55 +24,30 @@ export class CodexCliProvider implements AIProvider {
 
   startSession(name?: string): void {
     this.sessionEnabled = true
-    this.isFirstMessage = true
-    this.sessionId = undefined  // Will be set from first response's JSONL
-    this.sessionName = name
+    this.session.start(name)
+    this.session.sessionId = undefined  // Will be set from first response's JSONL
   }
 
   endSession(): void {
     this.sessionEnabled = false
-    this.isFirstMessage = true
-    this.sessionId = undefined
-    this.sessionName = undefined
+    this.session.end()
   }
 
   async chat(messages: Message[], systemPrompt?: string): Promise<string> {
-    // In session mode, only send the last user message (history is in session)
-    const prompt = this.sessionEnabled && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
+      ? this.session.buildPromptLastOnly(messages)
+      : this.session.buildPrompt(messages, systemPrompt)
     const result = await this.runCodex(prompt)
-    this.isFirstMessage = false
+    this.session.markMessageSent()
     return result
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
-    // In session mode, only send the last user message (history is in session)
-    const prompt = this.sessionEnabled && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
+      ? this.session.buildPromptLastOnly(messages)
+      : this.session.buildPrompt(messages, systemPrompt)
     yield* this.runCodexStream(prompt)
-    this.isFirstMessage = false
-  }
-
-  private buildPrompt(messages: Message[], systemPrompt?: string): string {
-    let prompt = ''
-    if (this.sessionName && this.isFirstMessage) {
-      prompt += `[${this.sessionName}]\n\n`
-    }
-    if (systemPrompt) {
-      prompt += `System: ${systemPrompt}\n\n`
-    }
-    for (const msg of messages) {
-      prompt += `${msg.role}: ${msg.content}\n\n`
-    }
-    return prompt
-  }
-
-  // Only get the last user message for session continuation
-  private buildPromptLastOnly(messages: Message[]): string {
-    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-    return lastUserMsg?.content || ''
+    this.session.markMessageSent()
   }
 
   private buildArgs(): string[] {
@@ -94,7 +69,7 @@ export class CodexCliProvider implements AIProvider {
       try {
         const event = JSON.parse(trimmed)
         if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
-          this.sessionId = event.thread_id
+          this.session.sessionId = event.thread_id
         } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
           text += event.item.text
         }
@@ -192,7 +167,7 @@ export class CodexCliProvider implements AIProvider {
         try {
           const event = JSON.parse(trimmed)
           if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
-            this.sessionId = event.thread_id
+            this.session.sessionId = event.thread_id
           } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
             pushChunk(event.item.text)
           }
@@ -214,7 +189,7 @@ export class CodexCliProvider implements AIProvider {
         try {
           const event = JSON.parse(lineBuf.trim())
           if (event.type === 'thread.started' && event.thread_id && this.sessionEnabled) {
-            this.sessionId = event.thread_id
+            this.session.sessionId = event.thread_id
           } else if (event.type === 'item.completed' && event.item?.type === 'agent_message' && event.item?.text) {
             pushChunk(event.item.text)
           }

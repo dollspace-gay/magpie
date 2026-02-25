@@ -12,7 +12,8 @@ vi.mock('@anthropic-ai/sdk', () => ({
         async *[Symbol.asyncIterator]() {
           yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'chunk1' } }
           yield { type: 'content_block_delta', delta: { type: 'text_delta', text: 'chunk2' } }
-        }
+        },
+        abort: vi.fn()
       })
     }
   }

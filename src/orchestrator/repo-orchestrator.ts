@@ -3,7 +3,7 @@ import type { Message } from '../providers/types.js'
 import type { Reviewer } from './types.js'
 import type { ReviewPlan, ReviewStep } from '../planner/types.js'
 import type { RepoReviewResult, ReviewIssue } from '../reporter/types.js'
-import type { RepoStats } from '../repo-scanner/types.js'
+import type { RepoStats, FileInfo } from '../repo-scanner/types.js'
 import type { FeatureReviewResult } from '../state/types.js'
 
 export type ReviewFocus = 'security' | 'performance' | 'architecture' | 'code-quality' | 'testing' | 'documentation'
@@ -71,7 +71,7 @@ export class RepoOrchestrator {
     }
   }
 
-  async executeFeaturePlan(plan: { steps: Array<{ featureId: string; name: string; description: string; files: any[]; estimatedTokens: number }>; totalEstimatedTokens: number; totalEstimatedCost: number }, repoName: string, stats?: RepoStats): Promise<FeatureRepoReviewResult> {
+  async executeFeaturePlan(plan: { steps: Array<{ featureId: string; name: string; description: string; files: FileInfo[]; estimatedTokens: number }>; totalEstimatedTokens: number; totalEstimatedCost: number }, repoName: string, stats?: RepoStats): Promise<FeatureRepoReviewResult> {
     this.allIssues = []
     this.issueCounter = 0
     const featureResults: Record<string, FeatureReviewResult> = {}

@@ -1,16 +1,16 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
+import { CliSessionHelper } from './session-helper.js'
 
 export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
-  // Session support: Gemini CLI returns session_id (UUID) in JSON output,
-  // and supports --resume <uuid> for continuing sessions
-  sessionId?: string
+  private session = new CliSessionHelper()
+  // Gemini gets its session ID from the first response (session_id in JSON)
   private sessionEnabled = false
-  private isFirstMessage = true
-  private sessionName?: string
+
+  get sessionId() { return this.session.sessionId }
 
   constructor(_options?: ProviderOptions) {
     // No API key needed for Gemini CLI (uses Google account)
@@ -24,53 +24,30 @@ export class GeminiCliProvider implements AIProvider {
 
   startSession(name?: string): void {
     this.sessionEnabled = true
-    this.isFirstMessage = true
-    this.sessionId = undefined  // Will be set from first response's JSON
-    this.sessionName = name
+    this.session.start(name)
+    this.session.sessionId = undefined  // Will be set from first response's JSON
   }
 
   endSession(): void {
     this.sessionEnabled = false
-    this.isFirstMessage = true
-    this.sessionId = undefined
-    this.sessionName = undefined
+    this.session.end()
   }
 
   async chat(messages: Message[], systemPrompt?: string): Promise<string> {
-    const prompt = this.sessionEnabled && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
+      ? this.session.buildPromptLastOnly(messages)
+      : this.session.buildPrompt(messages, systemPrompt)
     const result = await this.runGemini(prompt)
-    this.isFirstMessage = false
+    this.session.markMessageSent()
     return result
   }
 
   async *chatStream(messages: Message[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
-    const prompt = this.sessionEnabled && !this.isFirstMessage
-      ? this.buildPromptLastOnly(messages)
-      : this.buildPrompt(messages, systemPrompt)
+    const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
+      ? this.session.buildPromptLastOnly(messages)
+      : this.session.buildPrompt(messages, systemPrompt)
     yield* this.runGeminiStream(prompt)
-    this.isFirstMessage = false
-  }
-
-  private buildPrompt(messages: Message[], systemPrompt?: string): string {
-    let prompt = ''
-    if (this.sessionName && this.isFirstMessage) {
-      prompt += `[${this.sessionName}]\n\n`
-    }
-    if (systemPrompt) {
-      prompt += `System: ${systemPrompt}\n\n`
-    }
-    for (const msg of messages) {
-      prompt += `${msg.role}: ${msg.content}\n\n`
-    }
-    return prompt
-  }
-
-  // Only get the last user message for session continuation
-  private buildPromptLastOnly(messages: Message[]): string {
-    const lastUserMsg = [...messages].reverse().find(m => m.role === 'user')
-    return lastUserMsg?.content || ''
+    this.session.markMessageSent()
   }
 
   private runGemini(prompt: string): Promise<string> {
@@ -105,7 +82,7 @@ export class GeminiCliProvider implements AIProvider {
             const json = JSON.parse(output.trim())
             // Capture session_id from response
             if (this.sessionEnabled && json.session_id) {
-              this.sessionId = json.session_id
+              this.session.sessionId = json.session_id
             }
             resolve(json.response || '')
           } catch {
@@ -175,7 +152,7 @@ export class GeminiCliProvider implements AIProvider {
         try {
           const event = JSON.parse(trimmed)
           if (event.type === 'init' && event.session_id && this.sessionEnabled) {
-            this.sessionId = event.session_id
+            this.session.sessionId = event.session_id
           } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
             pushChunk(event.content)
           }
@@ -196,7 +173,7 @@ export class GeminiCliProvider implements AIProvider {
         try {
           const event = JSON.parse(lineBuf.trim())
           if (event.type === 'init' && event.session_id && this.sessionEnabled) {
-            this.sessionId = event.session_id
+            this.session.sessionId = event.session_id
           } else if (event.type === 'message' && event.role === 'assistant' && event.content) {
             pushChunk(event.content)
           }

@@ -24,11 +24,12 @@ export interface ReviewResult {
   fileLevel: number
   global: number
   failed: number
+  skipped: number
   details: Array<{
     path: string
     line?: number
     success: boolean
-    mode: 'inline' | 'file' | 'global' | 'failed'
+    mode: 'inline' | 'file' | 'global' | 'failed' | 'skipped'
   }>
 }
 
@@ -169,8 +170,8 @@ export function postComment(
       { input: body, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
     )
     return { success: true, inline: false }
-  } catch (e: any) {
-    return { success: false, inline: false, error: e.message?.slice(0, 200) }
+  } catch (e) {
+    return { success: false, inline: false, error: e instanceof Error ? e.message.slice(0, 200) : String(e) }
   }
 }
 
@@ -204,6 +205,34 @@ export function classifyComments(
  * Uses the PR Reviews API for inline/file-level comments,
  * and falls back to regular PR comments for global ones.
  */
+/** Fetch existing PR review comments for dedup */
+function getExistingComments(prNumber: string, resolvedRepo: string): Array<{ path?: string; line?: number; body?: string }> {
+  try {
+    // --jq '.[]' outputs one JSON object per line (NDJSON), which avoids
+    // the "[...][...]" concatenation issue with --paginate + JSON arrays
+    const result = execSync(
+      `gh api repos/${resolvedRepo}/pulls/${prNumber}/comments --paginate --jq '.[]'`,
+      { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
+    )
+    const lines = result.trim().split('\n').filter(Boolean)
+    return lines.map(line => JSON.parse(line))
+  } catch {
+    return []
+  }
+}
+
+function isDuplicateComment(
+  comment: ReviewCommentInput,
+  existing: Array<{ path?: string; line?: number; body?: string }>
+): boolean {
+  const prefix = comment.body.slice(0, 100)
+  return existing.some(e =>
+    e.path === comment.path &&
+    e.line === comment.line &&
+    typeof e.body === 'string' && e.body.slice(0, 100) === prefix
+  )
+}
+
 export function postReview(
   prNumber: string,
   classified: ClassifiedComment[],
@@ -213,13 +242,21 @@ export function postReview(
   validatePRNumber(prNumber)
   const resolvedRepo = getRepo(repo)
 
+  // Fetch existing comments for dedup
+  const existingComments = getExistingComments(prNumber, resolvedRepo)
+
   const details: ReviewResult['details'] = []
-  const reviewComments: any[] = []
+  const reviewComments: Array<{ path: string; line?: number; side?: string; body: string; subject_type?: string }> = []
   const reviewDetailIndices: number[] = []
   const globalEntries: Array<{ input: ReviewCommentInput; detailIndex: number }> = []
 
-  // Build payloads based on pre-classified modes
+  // Build payloads based on pre-classified modes, skipping duplicates
   for (const { input: c, mode } of classified) {
+    if (isDuplicateComment(c, existingComments)) {
+      details.push({ path: c.path, line: c.line, success: true, mode: 'skipped' })
+      continue
+    }
+
     if (mode === 'inline') {
       reviewComments.push({
         path: c.path,
@@ -297,11 +334,12 @@ export function postReview(
   }
 
   return {
-    posted: details.filter(d => d.success).length,
+    posted: details.filter(d => d.success && d.mode !== 'skipped').length,
     inline: details.filter(d => d.success && d.mode === 'inline').length,
     fileLevel: details.filter(d => d.success && d.mode === 'file').length,
     global: details.filter(d => d.success && d.mode === 'global').length,
     failed: details.filter(d => !d.success).length,
+    skipped: details.filter(d => d.mode === 'skipped').length,
     details,
   }
 }
