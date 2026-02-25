@@ -13,6 +13,11 @@ export interface ReviewCommentInput {
   body: string
 }
 
+export interface ClassifiedComment {
+  input: ReviewCommentInput
+  mode: 'inline' | 'file' | 'global'
+}
+
 export interface ReviewResult {
   posted: number
   inline: number
@@ -170,36 +175,52 @@ export function postComment(
 }
 
 /**
- * Post multiple comments as a single PR review with inline comments where possible.
- * Uses the PR Reviews API to create a proper code review.
- *
- * Placement strategy:
- *   1. Line in diff   → inline review comment (on the exact line)
- *   2. File in diff    → file-level review comment (attached to the file)
- *   3. File not in diff → global PR comment (last resort)
+ * Classify comments by how they can be placed on a PR.
+ * Returns each comment with its placement mode based on the PR diff.
+ */
+export function classifyComments(
+  prNumber: string,
+  comments: ReviewCommentInput[],
+  repo?: string
+): ClassifiedComment[] {
+  validatePRNumber(prNumber)
+  const resolvedRepo = getRepo(repo)
+  const diffInfo = getDiffInfo(prNumber, resolvedRepo)
+
+  return comments.map(c => {
+    const fileLines = diffInfo.get(c.path)
+    if (fileLines && c.line != null && fileLines.has(c.line)) {
+      return { input: c, mode: 'inline' as const }
+    } else if (fileLines) {
+      return { input: c, mode: 'file' as const }
+    } else {
+      return { input: c, mode: 'global' as const }
+    }
+  })
+}
+
+/**
+ * Post pre-classified comments to a PR.
+ * Uses the PR Reviews API for inline/file-level comments,
+ * and falls back to regular PR comments for global ones.
  */
 export function postReview(
   prNumber: string,
-  comments: ReviewCommentInput[],
+  classified: ClassifiedComment[],
   commitSha: string,
   repo?: string
 ): ReviewResult {
   validatePRNumber(prNumber)
   const resolvedRepo = getRepo(repo)
-  const diffInfo = getDiffInfo(prNumber, resolvedRepo)
 
   const details: ReviewResult['details'] = []
   const reviewComments: any[] = []
-  const reviewDetailIndices: number[] = [] // tracks which detail index each reviewComment maps to
-  const globalComments: Array<{ input: ReviewCommentInput; detailIndex: number }> = []
+  const reviewDetailIndices: number[] = []
+  const globalEntries: Array<{ input: ReviewCommentInput; detailIndex: number }> = []
 
-  // Classify each comment
-  for (let i = 0; i < comments.length; i++) {
-    const c = comments[i]
-    const fileLines = diffInfo.get(c.path)
-
-    if (fileLines && c.line != null && fileLines.has(c.line)) {
-      // Line is in the diff → inline comment
+  // Build payloads based on pre-classified modes
+  for (const { input: c, mode } of classified) {
+    if (mode === 'inline') {
       reviewComments.push({
         path: c.path,
         line: c.line,
@@ -208,8 +229,7 @@ export function postReview(
       })
       details.push({ path: c.path, line: c.line, success: false, mode: 'inline' })
       reviewDetailIndices.push(details.length - 1)
-    } else if (fileLines) {
-      // File in diff but line isn't → file-level review comment
+    } else if (mode === 'file') {
       const lineRef = c.line ? `**Line ${c.line}:**\n\n` : ''
       reviewComments.push({
         path: c.path,
@@ -219,13 +239,12 @@ export function postReview(
       details.push({ path: c.path, line: c.line, success: false, mode: 'file' })
       reviewDetailIndices.push(details.length - 1)
     } else {
-      // File not in diff → global comment later
       details.push({ path: c.path, line: c.line, success: false, mode: 'global' })
-      globalComments.push({ input: c, detailIndex: details.length - 1 })
+      globalEntries.push({ input: c, detailIndex: details.length - 1 })
     }
   }
 
-  // Post the batch review
+  // Post the batch review (inline + file-level)
   if (reviewComments.length > 0) {
     try {
       const payload = JSON.stringify({
@@ -237,22 +256,21 @@ export function postReview(
         `gh api repos/${resolvedRepo}/pulls/${prNumber}/reviews --input -`,
         { input: payload, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
       )
-      // Mark all review comments as successful
       for (const idx of reviewDetailIndices) {
         details[idx].success = true
       }
     } catch {
-      // Batch review failed — fall back to posting individually
+      // Batch failed — try posting individually
       for (let j = 0; j < reviewComments.length; j++) {
         const idx = reviewDetailIndices[j]
-        const c = comments.find(
-          cc => cc.path === details[idx].path && cc.line === details[idx].line
+        const orig = classified.find(
+          cc => cc.input.path === details[idx].path && cc.input.line === details[idx].line
         )
-        if (!c) continue
+        if (!orig) continue
         const result = postComment(prNumber, {
-          path: c.path,
-          line: c.line,
-          body: c.body,
+          path: orig.input.path,
+          line: orig.input.line,
+          body: orig.input.body,
           commitSha,
           repo,
         })
@@ -263,9 +281,9 @@ export function postReview(
     }
   }
 
-  // Post global comments for files not in diff
+  // Post global comments
   const repoFlag = repo ? ` --repo ${repo}` : ''
-  for (const { input: c, detailIndex } of globalComments) {
+  for (const { input: c, detailIndex } of globalEntries) {
     const location = c.line ? `**${c.path}:${c.line}**\n\n` : `**${c.path}**\n\n`
     try {
       execSync(

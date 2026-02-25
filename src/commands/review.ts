@@ -698,19 +698,52 @@ async function interactiveCommentReview(
 
   if (confirm.trim().toLowerCase() === 'y') {
     try {
-      const { postReview, getPRHeadSha } = await import('../github/commenter.js')
+      const { classifyComments, postReview, getPRHeadSha } = await import('../github/commenter.js')
       const headSha = getPRHeadSha(prNumber, target.repo)
 
-      const result = postReview(
-        prNumber,
-        approved.map(({ issue, comment }) => ({
-          path: issue.file,
-          line: issue.line,
-          body: comment,
-        })),
-        headSha,
-        target.repo,
-      )
+      const inputs = approved.map(({ issue, comment }) => ({
+        path: issue.file,
+        line: issue.line,
+        body: comment,
+      }))
+
+      // Classify comments against the PR diff
+      const classified = classifyComments(prNumber, inputs, target.repo)
+      const inlineOnes = classified.filter((c: any) => c.mode === 'inline')
+      const fallbackOnes = classified.filter((c: any) => c.mode !== 'inline')
+
+      let toPost = classified
+
+      // If any comments would fallback, ask user
+      if (fallbackOnes.length > 0) {
+        console.log(chalk.yellow(`\n  ⚠ ${fallbackOnes.length} comment(s) not on diff lines:`))
+        for (const fb of fallbackOnes) {
+          const loc = fb.input.line ? `${fb.input.path}:${fb.input.line}` : fb.input.path
+          const label = fb.mode === 'file' ? 'file-level' : 'global (file not in diff)'
+          console.log(chalk.yellow(`    - ${loc} → ${label}`))
+        }
+
+        const action = await new Promise<string>(resolve => {
+          rl.question(chalk.yellow(`\n  [p] Post all (inline + fallback) / [i] Inline only / [r] Retry all as inline / [s] Skip: `), resolve)
+        })
+
+        const act = action.trim().toLowerCase()
+        if (act === 'i') {
+          toPost = inlineOnes
+          if (inlineOnes.length === 0) {
+            console.log(chalk.dim('  No inline comments to post.'))
+            return
+          }
+        } else if (act === 'r') {
+          // Force all to inline mode — let the API try and fail/succeed
+          toPost = classified.map((c: any) => ({ ...c, mode: 'inline' }))
+        } else if (act === 's' || act !== 'p') {
+          console.log(chalk.dim('  Cancelled.'))
+          return
+        }
+      }
+
+      const result = postReview(prNumber, toPost, headSha, target.repo)
 
       const modeLabels = { inline: 'inline', file: 'file-level', global: 'comment', failed: 'FAILED' } as const
       for (const d of result.details) {
