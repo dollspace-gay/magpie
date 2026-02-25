@@ -233,6 +233,7 @@ interface ReviewTarget {
   type: 'pr' | 'local' | 'branch' | 'files'
   label: string
   prompt: string  // The prompt telling AI what to review
+  repo?: string   // GitHub repo (owner/name) for cross-repo PR reviews
 }
 
 async function interactiveCommentReview(
@@ -241,7 +242,8 @@ async function interactiveCommentReview(
   reviewers: Reviewer[],
   prNumber: string,
   spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null },
-  debateResult: { analysis: string; messages: Array<{ reviewerId: string; content: string }>; summaries: Array<{ reviewerId: string; summary: string }> }
+  debateResult: { analysis: string; messages: Array<{ reviewerId: string; content: string }>; summaries: Array<{ reviewerId: string; summary: string }> },
+  repo?: string
 ): Promise<void> {
   // Guard against unhandled promise rejections from async generator cleanup
   // (e.g., provider stream teardown) crashing the entire process
@@ -595,7 +597,7 @@ async function interactiveCommentReview(
   if (confirm.trim().toLowerCase() === 'y') {
     try {
       const { postComment, getPRHeadSha } = await import('../github/commenter.js')
-      const headSha = getPRHeadSha(prNumber)
+      const headSha = getPRHeadSha(prNumber, repo)
       let posted = 0
       let failed = 0
 
@@ -606,6 +608,7 @@ async function interactiveCommentReview(
           line: issue.line,
           body: comment,
           commitSha: headSha,
+          repo,
         })
         if (result.success) {
           posted++
@@ -767,11 +770,16 @@ export const reviewCommand = new Command('review')
         let prUrl: string
         let prNumber: string
 
+        let prRepo: string | undefined
+
         if (pr.startsWith('http')) {
           // Full URL provided
           prUrl = pr
           const match = pr.match(/\/pull\/(\d+)/)
           prNumber = match ? match[1] : pr
+          // Extract repo from URL for cross-repo PR operations
+          const repoFromUrl = pr.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)
+          if (repoFromUrl) prRepo = repoFromUrl[1]
         } else {
           // Just PR number, try to detect repo from git
           prNumber = pr
@@ -818,7 +826,8 @@ export const reviewCommand = new Command('review')
         target = {
           type: 'pr',
           label: `PR #${prNumber}`,
-          prompt: prPrompt
+          prompt: prPrompt,
+          repo: prRepo
         }
       } else {
         spinner.fail('Error')
@@ -1203,7 +1212,7 @@ export const reviewCommand = new Command('review')
         })
         if (enterPostProcess.trim().toLowerCase() === 'y') {
           const prNum = target.label.match(/\d+/)?.[0] || target.label
-          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef, result)
+          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef, result, target.repo)
         }
       }
 

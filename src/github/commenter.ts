@@ -13,7 +13,8 @@ function validatePRNumber(prNumber: string): void {
   }
 }
 
-function getRepo(): string {
+function getRepo(repo?: string): string {
+  if (repo) return repo
   const remoteUrl = execSync('git remote get-url origin', { encoding: 'utf-8' }).trim()
   const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
   if (!repoMatch) throw new Error('Could not detect GitHub repo from git remote')
@@ -23,10 +24,11 @@ function getRepo(): string {
 /**
  * Get the HEAD commit SHA for a PR.
  */
-export function getPRHeadSha(prNumber: string): string {
+export function getPRHeadSha(prNumber: string, repo?: string): string {
   validatePRNumber(prNumber)
+  const repoFlag = repo ? ` --repo ${repo}` : ''
   const result = execSync(
-    `gh pr view ${prNumber} --json headRefOid --jq .headRefOid`,
+    `gh pr view ${prNumber}${repoFlag} --json headRefOid --jq .headRefOid`,
     { encoding: 'utf-8' }
   )
   return result.trim()
@@ -38,10 +40,10 @@ export function getPRHeadSha(prNumber: string): string {
  */
 export function postComment(
   prNumber: string,
-  opts: { path: string; line?: number; body: string; commitSha: string }
+  opts: { path: string; line?: number; body: string; commitSha: string; repo?: string }
 ): CommentResult {
   validatePRNumber(prNumber)
-  const repo = getRepo()
+  const repo = getRepo(opts.repo)
 
   // Try inline comment first if we have a line number
   if (opts.line != null) {
@@ -66,9 +68,10 @@ export function postComment(
   // Regular PR comment (not inline)
   const location = opts.line ? `**${opts.path}:${opts.line}**\n\n` : `**${opts.path}**\n\n`
   const body = location + opts.body
+  const repoFlag = opts.repo ? ` --repo ${opts.repo}` : ''
   try {
     execSync(
-      `gh pr comment ${prNumber} --body-file -`,
+      `gh pr comment ${prNumber}${repoFlag} --body-file -`,
       { input: body, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] }
     )
     return { success: true, inline: false }
