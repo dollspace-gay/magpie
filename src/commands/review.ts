@@ -489,7 +489,23 @@ async function interactiveCommentReview(
               resolve('')
               return
             }
-            rl.question(chalk.yellow(`  You → ${targetReviewer!.id}: `), resolve)
+            const hint = 'Enter to end discussion'
+            let hintVisible = true
+            const clearHint = () => {
+              if (hintVisible) {
+                hintVisible = false
+                process.stdout.write('\x1b[K') // clear hint to end of line
+              }
+              process.stdin.removeListener('data', clearHint)
+            }
+            rl.question(chalk.yellow(`  You → ${targetReviewer!.id}: `), (answer) => {
+              clearHint()
+              resolve(answer)
+            })
+            // Show dim placeholder that clears on first keypress
+            process.stdout.write(chalk.dim(hint))
+            process.stdout.write(`\x1b[${hint.length}D`)
+            process.stdin.on('data', clearHint)
           })
           if (!question.trim()) break
 
