@@ -7,7 +7,7 @@ import { loadConfig } from '../config/loader.js'
 import { createProvider } from '../providers/factory.js'
 import type { Message } from '../providers/types.js'
 import { DebateOrchestrator } from '../orchestrator/orchestrator.js'
-import type { Reviewer, ReviewerStatus, MergedIssue } from '../orchestrator/types.js'
+import type { Reviewer, ReviewerStatus, MergedIssue, DebateResult } from '../orchestrator/types.js'
 import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
@@ -236,14 +236,96 @@ interface ReviewTarget {
   repo?: string   // GitHub repo (owner/name) for cross-repo PR reviews
 }
 
+interface ReviewerSessionState {
+  conversationHistory: Message[]
+  sessionStarted: boolean
+}
+
+function buildInitialSessionContext(
+  reviewer: Reviewer,
+  debateResult: DebateResult,
+  target: ReviewTarget,
+  issues: MergedIssue[]
+): string {
+  const parts: string[] = []
+
+  // 1. Role explanation
+  parts.push(`You are reviewer "${reviewer.id}" entering the post-review discussion phase. The human will discuss specific issues with you one by one. You have the full context of the PR and your original review below.`)
+
+  // 2. PR diff (from target.prompt)
+  parts.push(`## PR Diff & Review Prompt\n\n${target.prompt}`)
+
+  // 3. Gathered context summary
+  if (debateResult.context?.summary) {
+    parts.push(`## Gathered Context\n\n${debateResult.context.summary}`)
+  }
+
+  // 4. This reviewer's debate messages and summary
+  const reviewerMessages = debateResult.messages
+    .filter(m => m.reviewerId === reviewer.id)
+    .map(m => m.content)
+  const reviewerSummary = debateResult.summaries
+    .find(s => s.reviewerId === reviewer.id)?.summary || ''
+
+  if (reviewerMessages.length > 0) {
+    parts.push(`## Your Original Review Analysis\n\n${reviewerMessages.join('\n\n')}`)
+  }
+  if (reviewerSummary) {
+    parts.push(`## Your Review Summary\n\n${reviewerSummary}`)
+  }
+
+  // 5. Overall analysis
+  if (debateResult.analysis) {
+    parts.push(`## Initial PR Analysis\n\n${debateResult.analysis}`)
+  }
+
+  // 6. All issues overview
+  const issueList = issues.map((iss, idx) =>
+    `${idx + 1}. [${iss.severity.toUpperCase()}] ${iss.title} @ ${iss.file}${iss.line ? ':' + iss.line : ''} (raised by: ${iss.raisedBy.join(', ')})`
+  ).join('\n')
+  parts.push(`## All Issues Found\n\n${issueList}`)
+
+  // 7. Discussion behavior guidance
+  parts.push(`## Discussion Guidelines\n\nWhen discussing issues:\n- Reference specific code from the diff when explaining problems\n- Be concise but thorough\n- If the human's points are valid, update your assessment\n- Be willing to change severity, revise descriptions, or withdraw issues entirely if convinced\n- Remember context from previous issue discussions in this session`)
+
+  return parts.join('\n\n---\n\n')
+}
+
+function getOrCreateSession(
+  reviewer: Reviewer,
+  sessions: Map<string, ReviewerSessionState>,
+  debateResult: DebateResult,
+  target: ReviewTarget,
+  issues: MergedIssue[]
+): ReviewerSessionState {
+  const existing = sessions.get(reviewer.id)
+  if (existing) return existing
+
+  // Start provider session if supported
+  if (reviewer.provider.startSession) {
+    reviewer.provider.startSession(`discuss-${reviewer.id}`)
+  }
+
+  const initialContext = buildInitialSessionContext(reviewer, debateResult, target, issues)
+  const session: ReviewerSessionState = {
+    conversationHistory: [
+      { role: 'user', content: initialContext },
+      { role: 'assistant', content: 'Understood. I have the full PR context, gathered context, and my original review analysis. Ready to discuss specific issues.' },
+    ],
+    sessionStarted: !!reviewer.provider.startSession,
+  }
+  sessions.set(reviewer.id, session)
+  return session
+}
+
 async function interactiveCommentReview(
   rl: ReturnType<typeof createInterface>,
   issues: MergedIssue[],
   reviewers: Reviewer[],
   prNumber: string,
   spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null },
-  debateResult: { analysis: string; messages: Array<{ reviewerId: string; content: string }>; summaries: Array<{ reviewerId: string; summary: string }> },
-  repo?: string
+  debateResult: DebateResult,
+  target: ReviewTarget,
 ): Promise<void> {
   // Guard against unhandled promise rejections from async generator cleanup
   // (e.g., provider stream teardown) crashing the entire process
@@ -254,6 +336,7 @@ async function interactiveCommentReview(
 
   const approved: { issue: MergedIssue; comment: string }[] = []
   const stats = { posted: 0, edited: 0, discussed: 0, skipped: 0 }
+  const reviewerSessions = new Map<string, ReviewerSessionState>()
 
   const showProgress = (current: number) => {
     const done = stats.posted + stats.edited + stats.discussed + stats.skipped
@@ -266,8 +349,23 @@ async function interactiveCommentReview(
     return chalk.dim(`  [${done}/${issues.length} done: ${progress}]`)
   }
 
+  function cleanupSessions() {
+    for (const [reviewerId, session] of reviewerSessions) {
+      if (session.sessionStarted) {
+        const reviewer = reviewers.find(r => r.id === reviewerId)
+        if (reviewer?.provider.endSession) {
+          reviewer.provider.endSession()
+        }
+      }
+    }
+    reviewerSessions.clear()
+    process.removeListener('unhandledRejection', rejectHandler)
+  }
+
   console.log(chalk.cyan('\n📝 Post-processing: Review each issue before posting to GitHub'))
   console.log(chalk.dim('   [p] Post as-is  [e] Edit  [d] Discuss with reviewer  [s] Skip  [q] Stop\n'))
+
+  try {
 
   for (let i = 0; i < issues.length; i++) {
     const issue = issues[i]
@@ -352,34 +450,22 @@ async function interactiveCommentReview(
         try {
         console.log(chalk.dim(`  Discussing with ${targetReviewer.id}. (Empty line to end discussion)`))
 
-        // Multi-turn discussion with conversation history
-        // Include original debate context from this reviewer
-        const reviewerMessages = debateResult.messages
-          .filter(m => m.reviewerId === targetReviewer!.id)
-          .map(m => m.content)
-        const reviewerSummary = debateResult.summaries
-          .find(s => s.reviewerId === targetReviewer!.id)?.summary || ''
-        const originalContext = [
-          reviewerMessages.length > 0 ? `Your original review analysis:\n${reviewerMessages.join('\n\n')}` : '',
-          reviewerSummary ? `Your review summary:\n${reviewerSummary}` : '',
-          debateResult.analysis ? `Initial PR analysis:\n${debateResult.analysis}` : '',
-        ].filter(Boolean).join('\n\n---\n\n')
-
-        const issueContext = `${originalContext}\n\n---\n\nNow discussing this specific issue you raised:\n[${issue.severity.toUpperCase()}] ${issue.title} at ${issue.file}${issue.line ? ':' + issue.line : ''}\n${issue.description}${issue.suggestedFix ? '\nSuggested fix: ' + issue.suggestedFix : ''}\n\nThe human reviewer wants to discuss this with you. Respond concisely. If their points are valid, update your assessment. Be willing to change severity, revise the description, or withdraw the issue entirely if convinced.`
-        const conversationHistory: Message[] = []
+        // Get or create persistent session for this reviewer
+        const session = getOrCreateSession(targetReviewer, reviewerSessions, debateResult, target, issues)
         let discussionHappened = false
 
         // Auto-explain: ask the reviewer to detail the issue before user interaction
         {
-          const explainPrompt = `${issueContext}\n\nBefore the human asks questions, first explain this issue in detail:\n1. Where exactly is the problem? (quote the relevant code)\n2. Why is this a problem? (what could go wrong)\n3. How should it be fixed? (concrete suggestion with code)\n\nBe concise but thorough.`
-          conversationHistory.push({ role: 'user', content: explainPrompt })
+          const issueDetail = `[${issue.severity.toUpperCase()}] ${issue.title} at ${issue.file}${issue.line ? ':' + issue.line : ''}\n${issue.description}${issue.suggestedFix ? '\nSuggested fix: ' + issue.suggestedFix : ''}`
+          const explainPrompt = `Now let's discuss issue: ${issueDetail}\n\nBefore the human asks questions, first explain this issue in detail:\n1. Where exactly is the problem? (quote the relevant code from the diff)\n2. Why is this a problem? (what could go wrong)\n3. How should it be fixed? (concrete suggestion with code)\n\nBe concise but thorough.`
+          session.conversationHistory.push({ role: 'user', content: explainPrompt })
 
           let explainResponse = ''
           if (spinnerRef.spinner) spinnerRef.spinner.stop()
           const explainSpinner = ora({ text: `${targetReviewer.id} is explaining...`, discardStdin: false }).start()
 
           for await (const chunk of targetReviewer.provider.chatStream(
-            conversationHistory,
+            session.conversationHistory,
             targetReviewer.systemPrompt
           )) {
             explainResponse += chunk
@@ -389,7 +475,7 @@ async function interactiveCommentReview(
 
           console.log(chalk.cyan(`\n  ${targetReviewer.id}:`))
           console.log(marked(fixMarkdown(explainResponse)))
-          conversationHistory.push({ role: 'assistant', content: explainResponse })
+          session.conversationHistory.push({ role: 'assistant', content: explainResponse })
           discussionHappened = true
         }
 
@@ -407,14 +493,14 @@ async function interactiveCommentReview(
           })
           if (!question.trim()) break
 
-          conversationHistory.push({ role: 'user', content: question })
+          session.conversationHistory.push({ role: 'user', content: question })
 
           let response = ''
           if (spinnerRef.spinner) spinnerRef.spinner.stop()
           const discussSpinner = ora({ text: `${targetReviewer.id} is thinking...`, discardStdin: false }).start()
 
           for await (const chunk of targetReviewer.provider.chatStream(
-            conversationHistory,
+            session.conversationHistory,
             targetReviewer.systemPrompt
           )) {
             response += chunk
@@ -428,7 +514,7 @@ async function interactiveCommentReview(
           console.log(chalk.cyan(`\n  ${targetReviewer.id}:`))
           console.log(marked(fixMarkdown(response)))
 
-          conversationHistory.push({ role: 'assistant', content: response })
+          session.conversationHistory.push({ role: 'assistant', content: response })
         }
 
         if (discussionHappened) {
@@ -438,12 +524,12 @@ async function interactiveCommentReview(
 
           while (!commentResolved) {
             console.log(chalk.dim('\n  Generating final comment based on discussion...'))
-            conversationHistory.push({ role: 'user', content: generatePrompt })
+            session.conversationHistory.push({ role: 'user', content: generatePrompt })
 
             let finalComment = ''
             const genSpinner = ora({ text: `${targetReviewer.id} generating comment...`, discardStdin: false }).start()
             for await (const chunk of targetReviewer.provider.chatStream(
-              conversationHistory,
+              session.conversationHistory,
               targetReviewer.systemPrompt
             )) {
               finalComment += chunk
@@ -451,7 +537,7 @@ async function interactiveCommentReview(
             genSpinner.stop()
             console.log(chalk.dim('\n  Generated comment:'))
             console.log(marked(fixMarkdown(finalComment)))
-            conversationHistory.push({ role: 'assistant', content: finalComment })
+            session.conversationHistory.push({ role: 'assistant', content: finalComment })
 
             finalComment = finalComment.trim()
 
@@ -597,7 +683,7 @@ async function interactiveCommentReview(
   if (confirm.trim().toLowerCase() === 'y') {
     try {
       const { postComment, getPRHeadSha } = await import('../github/commenter.js')
-      const headSha = getPRHeadSha(prNumber, repo)
+      const headSha = getPRHeadSha(prNumber, target.repo)
       let posted = 0
       let failed = 0
 
@@ -608,7 +694,7 @@ async function interactiveCommentReview(
           line: issue.line,
           body: comment,
           commitSha: headSha,
-          repo,
+          repo: target.repo,
         })
         if (result.success) {
           posted++
@@ -628,7 +714,9 @@ async function interactiveCommentReview(
     console.log(chalk.dim('  Cancelled.'))
   }
 
-  process.removeListener('unhandledRejection', rejectHandler)
+  } finally {
+    cleanupSessions()
+  }
 }
 
 function formatIssueForGitHub(issue: MergedIssue): string {
@@ -1212,7 +1300,7 @@ export const reviewCommand = new Command('review')
         })
         if (enterPostProcess.trim().toLowerCase() === 'y') {
           const prNum = target.label.match(/\d+/)?.[0] || target.label
-          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef, result, target.repo)
+          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef, result, target)
         }
       }
 
