@@ -157,7 +157,7 @@ export const reviewCommand = new Command('review')
         }
       } else if (pr) {
         // Support both PR number and full URL
-        let prUrl: string
+        let prUrl = ''
         let prNumber: string
 
         let prRepo: string | undefined
@@ -178,17 +178,35 @@ export const reviewCommand = new Command('review')
           if (!/^[a-zA-Z0-9_-]+$/.test(gitRemote)) {
             throw new Error(`Invalid git remote name: ${gitRemote}`)
           }
+
+          // Use gh to resolve the actual PR URL (handles forks: finds PR on upstream repo)
           try {
-            const remoteUrl = execSync(`git remote get-url ${gitRemote}`, { encoding: 'utf-8' }).trim()
-            // Convert git@github.com:org/repo.git or https://github.com/org/repo.git to https://github.com/org/repo
-            const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
-            if (repoMatch) {
-              prUrl = `https://github.com/${repoMatch[1]}/pull/${prNumber}`
-            } else {
-              prUrl = `PR #${prNumber}`  // Fallback
+            const resolvedUrl = execSync(
+              `gh pr view ${prNumber} --json url --jq .url`,
+              { encoding: 'utf-8', timeout: 30000 }
+            ).trim()
+            const repoFromPR = resolvedUrl.match(/github\.com\/([^/]+\/[^/]+)\/pull\//)
+            if (repoFromPR) {
+              prRepo = repoFromPR[1]
+              prUrl = resolvedUrl
             }
           } catch {
-            prUrl = `PR #${prNumber}`  // Fallback if not in git repo
+            // gh pr view failed — fall back to git remote detection
+          }
+
+          if (!prRepo) {
+            try {
+              const remoteUrl = execSync(`git remote get-url ${gitRemote}`, { encoding: 'utf-8' }).trim()
+              // Convert git@github.com:org/repo.git or https://github.com/org/repo.git to https://github.com/org/repo
+              const repoMatch = remoteUrl.match(/github\.com[:/]([^/]+\/[^/.]+)/)
+              if (repoMatch) {
+                prUrl = `https://github.com/${repoMatch[1]}/pull/${prNumber}`
+              } else {
+                prUrl = `PR #${prNumber}`  // Fallback
+              }
+            } catch {
+              prUrl = `PR #${prNumber}`  // Fallback if not in git repo
+            }
           }
         }
 
