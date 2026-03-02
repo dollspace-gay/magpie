@@ -13,6 +13,7 @@ export interface DefaultsConfig {
   max_rounds: number
   output_format: 'markdown' | 'json'
   check_convergence: boolean
+  language?: string  // Output language (e.g., 'zh', 'en', 'ja')
 }
 
 export interface ContextGathererConfigOptions {

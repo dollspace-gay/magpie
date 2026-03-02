@@ -49,6 +49,7 @@ export interface ReviewerStatus {
 export interface OrchestratorOptions {
   maxRounds: number
   interactive: boolean
+  language?: string  // Output language instruction to inject into prompts
   onMessage?: (reviewerId: string, chunk: string) => void
   onRoundComplete?: (round: number, converged: boolean) => void
   onInteractive?: () => Promise<string | null>

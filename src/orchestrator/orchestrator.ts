@@ -43,6 +43,12 @@ export class DebateOrchestrator {
     this.options = options
   }
 
+  /** Build a language instruction suffix (empty string if no language configured) */
+  private get langSuffix(): string {
+    if (!this.options.language) return ''
+    return `\n\nIMPORTANT: You MUST respond in ${this.options.language}.`
+  }
+
   // Estimate tokens from text (CJK ~0.7 tokens/char, English ~0.25 tokens/char)
   private estimateTokens(text: string): number {
     const cjkCount = (text.match(/[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]/g) || []).length
@@ -504,7 +510,7 @@ ${this.analysis}
 
 You are [${currentReviewerId}]. Review EVERY changed file and EVERY changed function/block — do not skip any.
 For each change, check: correctness, security, performance, error handling, edge cases, maintainability.
-If you reviewed a file and found no issues, say so briefly. Do not stop early.`
+If you reviewed a file and found no issues, say so briefly. Do not stop early.${this.langSuffix}`
 
       return [{ role: 'user', content: prompt }]
     }
@@ -547,7 +553,7 @@ If you reviewed a file and found no issues, say so briefly. Do not stop early.`
 
       return [{
         role: 'user',
-        content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.`
+        content: `You are [${currentReviewerId}]. Here's what others said in the previous round:\n\n${newContent}\n\nDo three things:\n1. Continue your own exhaustive review — are there changed files or functions you haven't covered yet? Cover them now.\n2. Point out what the other reviewers MISSED — which files or changes did they skip or gloss over?\n3. Respond to their points — agree where valid, challenge where you disagree.${this.langSuffix}`
       }]
     }
 
@@ -608,6 +614,16 @@ Previous rounds discussion:`
     return this.reviewers
   }
 
+  /** Expose analyzer for post-review discussion */
+  getAnalyzer(): Reviewer {
+    return this.analyzer
+  }
+
+  /** Expose summarizer for post-review discussion */
+  getSummarizer(): Reviewer {
+    return this.summarizer
+  }
+
   /** Extract structured issues from review discussion using AI.
    *  Always uses the summarizer to produce consistent, controlled output. */
   private async extractIssues(): Promise<MergedIssue[]> {
@@ -660,7 +676,7 @@ Rules:
 - If multiple reviewers mention the same issue, list all their IDs in raisedBy
 - Use the exact reviewer IDs: ${reviewerIds}
 - If a file path or line number is mentioned, include it; otherwise omit the field
-- Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only`
+- Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only${this.options.language ? `\n- Write the "title", "description", and "suggestedFix" fields in ${this.options.language}. Keep JSON keys and severity/category values in English.` : ''}`
 
     const systemPrompt = 'You extract structured issues from code review text. Output only valid JSON.'
     const chatOpts = { disableTools: true }
@@ -711,7 +727,7 @@ Use reviewer IDs: ${reviewerIds}`
 
   private async collectSummaries(): Promise<DebateSummary[]> {
     const summaries: DebateSummary[] = []
-    const summaryPrompt = 'Please summarize your key points and conclusions. Do not reveal your identity or role.'
+    const summaryPrompt = `Please summarize your key points and conclusions. Do not reveal your identity or role.${this.langSuffix}`
 
     for (const reviewer of this.reviewers) {
       const messages = this.buildMessages(reviewer.id)
@@ -740,7 +756,7 @@ Use reviewer IDs: ${reviewerIds}`
 - Points of disagreement with analysis
 - Recommended action items
 
-${summaryText}`
+${summaryText}${this.langSuffix}`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
     const response = await this.summarizer.provider.chat(messages, this.summarizer.systemPrompt)

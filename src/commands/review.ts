@@ -10,9 +10,9 @@ import { createInterface } from 'readline'
 import { marked } from 'marked'
 import TerminalRenderer from 'marked-terminal'
 import { ContextGatherer } from '../context-gatherer/index.js'
-import type { ReviewTarget } from './review/types.js'
+import type { ReviewTarget, ReviewerSessionState } from './review/types.js'
 import { fixMarkdown, getRandomJoke, formatMarkdown } from './review/utils.js'
-import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview } from './review/interactive.js'
+import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion } from './review/interactive.js'
 import { handleRepoReview } from './review/repo-review.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from './review/session-cmds.js'
 
@@ -377,6 +377,7 @@ export const reviewCommand = new Command('review')
         maxRounds,
         interactive: options.interactive,
         checkConvergence,
+        language: config.defaults.language,
         onWaiting: (reviewerId) => {
           // Flush previous reviewer's buffer before showing spinner
           flushBuffer()
@@ -611,6 +612,19 @@ export const reviewCommand = new Command('review')
         }
       }
 
+      // Build all available roles (reviewers + analyzer + summarizer)
+      const allRoles = [
+        ...orchestrator.getReviewers(),
+        orchestrator.getAnalyzer(),
+        orchestrator.getSummarizer()
+      ]
+      const reviewerSessions = new Map<string, ReviewerSessionState>()
+
+      // Post-review discussion phase (all review types)
+      if (result.parsedIssues && result.parsedIssues.length > 0 && options.interactive && rl) {
+        await interactivePostReviewDiscussion(rl, allRoles, result, target, result.parsedIssues, spinnerRef, reviewerSessions, config.defaults.language)
+      }
+
       // Post-processing: comment flow for PR reviews
       if (options.post !== false && target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
         if (!rl) {
@@ -621,7 +635,7 @@ export const reviewCommand = new Command('review')
         })
         if (enterPostProcess.trim().toLowerCase() === 'y') {
           const prNum = target.label.match(/\d+/)?.[0] || target.label
-          await interactiveCommentReview(rl!, result.parsedIssues, orchestrator.getReviewers(), prNum, spinnerRef, result, target, interruptState)
+          await interactiveCommentReview(rl!, result.parsedIssues, allRoles, prNum, spinnerRef, result, target, interruptState, reviewerSessions, config.defaults.language)
         }
       }
 

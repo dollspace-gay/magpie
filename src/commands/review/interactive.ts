@@ -143,11 +143,89 @@ Provide a focused, helpful response.`
   }
 }
 
+// Post-review discussion: chat with any role (reviewer/analyzer/summarizer) before comment posting
+export async function interactivePostReviewDiscussion(
+  rl: ReturnType<typeof createInterface>,
+  allRoles: Reviewer[],
+  debateResult: DebateResult,
+  target: ReviewTarget,
+  issues: MergedIssue[],
+  spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null },
+  reviewerSessions: Map<string, ReviewerSessionState>,
+  language?: string,
+): Promise<void> {
+  const enter = await new Promise<string>(resolve => {
+    rl.question(chalk.yellow('\n  Enter discussion phase? (y/n): '), resolve)
+  })
+  if (enter.trim().toLowerCase() !== 'y') return
+
+  while (true) {
+    // Display numbered list of all roles
+    console.log(chalk.cyan('\n  Available roles:'))
+    allRoles.forEach((role, i) => {
+      console.log(chalk.dim(`    [${i + 1}] ${role.id}`))
+    })
+
+    const pick = await new Promise<string>(resolve => {
+      rl.question(chalk.yellow('\n  Pick a role by number (or Enter to exit discussion): '), resolve)
+    })
+
+    if (!pick.trim()) break
+
+    const idx = parseInt(pick.trim(), 10) - 1
+    if (idx < 0 || idx >= allRoles.length) {
+      console.log(chalk.red('  Invalid selection.'))
+      continue
+    }
+
+    const selectedRole = allRoles[idx]
+    console.log(chalk.dim(`  Chatting with ${selectedRole.id}. (Empty line to end, /skip to exit discussion phase)`))
+
+    // Get or create session for selected role
+    const session = getOrCreateSession(selectedRole, reviewerSessions, debateResult, target, issues, language)
+
+    while (true) {
+      if (process.stdin.isPaused?.()) process.stdin.resume()
+
+      const question = await new Promise<string>(resolve => {
+        rl.question(chalk.yellow(`  You → ${selectedRole.id}: `), resolve)
+      })
+
+      if (!question.trim()) break
+      if (question.trim() === '/skip') return  // Exit entire discussion phase
+
+      session.conversationHistory.push({ role: 'user', content: question })
+
+      let response = ''
+      if (spinnerRef.spinner) spinnerRef.spinner.stop()
+      const chatSpinner = ora({ text: `${selectedRole.id} is thinking...`, discardStdin: false }).start()
+
+      try {
+        for await (const chunk of selectedRole.provider.chatStream(
+          session.conversationHistory,
+          selectedRole.systemPrompt
+        )) {
+          response += chunk
+        }
+      } finally {
+        chatSpinner.stop()
+        if (process.stdin.isPaused?.()) process.stdin.resume()
+      }
+
+      console.log(chalk.cyan(`\n  ${selectedRole.id}:`))
+      console.log(marked(fixMarkdown(response)))
+
+      session.conversationHistory.push({ role: 'assistant', content: response })
+    }
+  }
+}
+
 export function buildInitialSessionContext(
   reviewer: Reviewer,
   debateResult: DebateResult,
   target: ReviewTarget,
-  issues: MergedIssue[]
+  issues: MergedIssue[],
+  language?: string,
 ): string {
   const parts: string[] = []
 
@@ -188,7 +266,8 @@ export function buildInitialSessionContext(
   parts.push(`## All Issues Found\n\n${issueList}`)
 
   // 7. Discussion behavior guidance
-  parts.push(`## Discussion Guidelines\n\nWhen discussing issues:\n- Reference specific code from the diff when explaining problems\n- Be concise but thorough\n- If the human's points are valid, update your assessment\n- Be willing to change severity, revise descriptions, or withdraw issues entirely if convinced\n- Remember context from previous issue discussions in this session`)
+  const langRule = language ? `\n- You MUST respond in ${language}.` : ''
+  parts.push(`## Discussion Guidelines\n\nWhen discussing issues:\n- Reference specific code from the diff when explaining problems\n- Be concise but thorough\n- If the human's points are valid, update your assessment\n- Be willing to change severity, revise descriptions, or withdraw issues entirely if convinced\n- Remember context from previous issue discussions in this session${langRule}`)
 
   return parts.join('\n\n---\n\n')
 }
@@ -198,7 +277,8 @@ export function getOrCreateSession(
   sessions: Map<string, ReviewerSessionState>,
   debateResult: DebateResult,
   target: ReviewTarget,
-  issues: MergedIssue[]
+  issues: MergedIssue[],
+  language?: string,
 ): ReviewerSessionState {
   const existing = sessions.get(reviewer.id)
   if (existing) return existing
@@ -208,7 +288,7 @@ export function getOrCreateSession(
     reviewer.provider.startSession(`discuss-${reviewer.id}`)
   }
 
-  const initialContext = buildInitialSessionContext(reviewer, debateResult, target, issues)
+  const initialContext = buildInitialSessionContext(reviewer, debateResult, target, issues, language)
   const session: ReviewerSessionState = {
     conversationHistory: [
       { role: 'user', content: initialContext },
@@ -223,12 +303,14 @@ export function getOrCreateSession(
 export async function interactiveCommentReview(
   rl: ReturnType<typeof createInterface>,
   issues: MergedIssue[],
-  reviewers: Reviewer[],
+  allRoles: Reviewer[],
   prNumber: string,
   spinnerRef: { spinner: ReturnType<typeof ora> | null; interval: ReturnType<typeof setInterval> | null },
   debateResult: DebateResult,
   target: ReviewTarget,
   interruptState?: { interrupted: boolean },
+  reviewerSessions?: Map<string, ReviewerSessionState>,
+  language?: string,
 ): Promise<void> {
   // Guard against unhandled promise rejections from async generator cleanup
   // (e.g., provider stream teardown) crashing the entire process
@@ -239,7 +321,7 @@ export async function interactiveCommentReview(
 
   const approved: { issue: MergedIssue; comment: string }[] = []
   const stats = { posted: 0, edited: 0, discussed: 0, skipped: 0 }
-  const reviewerSessions = new Map<string, ReviewerSessionState>()
+  const sessions = reviewerSessions ?? new Map<string, ReviewerSessionState>()
 
   const showProgress = (current: number) => {
     const done = stats.posted + stats.edited + stats.discussed + stats.skipped
@@ -253,20 +335,28 @@ export async function interactiveCommentReview(
   }
 
   function cleanupSessions() {
-    for (const [reviewerId, session] of reviewerSessions) {
+    for (const [reviewerId, session] of sessions) {
       if (session.sessionStarted) {
-        const reviewer = reviewers.find(r => r.id === reviewerId)
-        if (reviewer?.provider.endSession) {
-          reviewer.provider.endSession()
+        const role = allRoles.find(r => r.id === reviewerId)
+        if (role?.provider.endSession) {
+          role.provider.endSession()
         }
       }
     }
-    reviewerSessions.clear()
+    sessions.clear()
     process.removeListener('unhandledRejection', rejectHandler)
   }
 
   console.log(chalk.cyan('\n📝 Post-processing: Review each issue before posting to GitHub'))
   console.log(chalk.dim('   [p] Post as-is  [e] Edit  [d] Discuss with reviewer  [s] Skip  [q] Stop\n'))
+
+  // Ask for comment style instructions up front
+  const commentStylePrompt = await new Promise<string>(resolve => {
+    rl.question(chalk.yellow('  Comment style instructions (or Enter for default): '), resolve)
+  })
+  if (commentStylePrompt.trim()) {
+    console.log(chalk.dim(`  Style: ${commentStylePrompt.trim()}`))
+  }
 
   try {
 
@@ -333,33 +423,45 @@ export async function interactiveCommentReview(
     }
 
     if (choice === 'd') {
-      // Discuss with reviewer
+      // Discuss with any available role
       let targetReviewer: Reviewer | undefined
 
-      if (issue.raisedBy.length === 1) {
-        targetReviewer = reviewers.find(r => r.id === issue.raisedBy[0])
+      // Show all roles with the default (first raisedBy reviewer) highlighted
+      const defaultId = issue.raisedBy[0]
+      console.log(chalk.dim('  Available roles:'))
+      allRoles.forEach((role, idx) => {
+        const isDefault = role.id === defaultId
+        const label = isDefault ? chalk.cyan(`${role.id} (default)`) : role.id
+        console.log(chalk.dim(`    [${idx + 1}] ${label}`))
+      })
+
+      const pickAnswer = await new Promise<string>(resolve => {
+        rl.question(chalk.yellow(`  Pick by number (Enter for ${defaultId}): `), resolve)
+      })
+
+      if (pickAnswer.trim()) {
+        const idx = parseInt(pickAnswer.trim(), 10) - 1
+        if (idx >= 0 && idx < allRoles.length) {
+          targetReviewer = allRoles[idx]
+        } else {
+          // Try matching by name
+          targetReviewer = allRoles.find(r => r.id === pickAnswer.trim())
+        }
       }
 
-      if (!targetReviewer && issue.raisedBy.length > 1) {
-        console.log(chalk.dim(`  Found by: ${issue.raisedBy.join(', ')}`))
-        const pickAnswer = await new Promise<string>(resolve => {
-          rl.question(chalk.yellow(`  Discuss with whom? [${issue.raisedBy.join('/')}]: `), resolve)
-        })
-        targetReviewer = reviewers.find(r => r.id === pickAnswer.trim())
-      }
-
-      // Fallback to first available reviewer if raisedBy doesn't match any
+      // Fallback to default raisedBy or first role
       if (!targetReviewer) {
-        targetReviewer = reviewers[0]
+        targetReviewer = allRoles.find(r => r.id === defaultId) || allRoles[0]
       }
 
       if (targetReviewer) {
         try {
-        console.log(chalk.dim(`  Discussing with ${targetReviewer.id}. (Empty line to end discussion)`))
+        console.log(chalk.dim(`  Discussing with ${targetReviewer.id}. (Empty line to end discussion, /skip to abandon issue)`))
 
         // Get or create persistent session for this reviewer
-        const session = getOrCreateSession(targetReviewer, reviewerSessions, debateResult, target, issues)
+        const session = getOrCreateSession(targetReviewer, sessions, debateResult, target, issues, language)
         let discussionHappened = false
+        let issueAbandoned = false
 
         // Auto-explain: ask the reviewer to detail the issue before user interaction
         {
@@ -396,7 +498,7 @@ export async function interactiveCommentReview(
               resolve('')
               return
             }
-            const hint = 'Enter to end discussion'
+            const hint = 'Enter to end, /skip to abandon'
             let hintVisible = true
             const clearHint = () => {
               if (hintVisible) {
@@ -415,6 +517,10 @@ export async function interactiveCommentReview(
             process.stdin.on('data', clearHint)
           })
           if (!question.trim()) break
+          if (question.trim() === '/skip' || question.trim() === '/drop') {
+            issueAbandoned = true
+            break
+          }
 
           session.conversationHistory.push({ role: 'user', content: question })
 
@@ -440,9 +546,14 @@ export async function interactiveCommentReview(
           session.conversationHistory.push({ role: 'assistant', content: response })
         }
 
-        if (discussionHappened) {
+        if (issueAbandoned) {
+          stats.skipped++
+          console.log(chalk.dim('  Issue abandoned.'))
+          // fall through to continue (handled by outer if/continue)
+        } else if (discussionHappened) {
           // Generate (and optionally regenerate) the final comment
-          let generatePrompt = `Based on our discussion, generate the final GitHub review comment for this issue.\n- If we agreed to drop/withdraw this issue, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format, including updated severity, description, and suggested fix if applicable.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+          const styleClause = commentStylePrompt.trim() ? `\nComment style requirements: ${commentStylePrompt.trim()}` : ''
+          let generatePrompt = `Based on our discussion, generate the final GitHub review comment for this issue.${styleClause}\n- If we agreed to drop/withdraw this issue, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format, including updated severity, description, and suggested fix if applicable.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
           let commentResolved = false
 
           while (!commentResolved) {
@@ -500,9 +611,9 @@ export async function interactiveCommentReview(
                   rl.question(chalk.yellow('  Regenerate instructions: '), resolve)
                 })
                 if (regenPrompt.trim()) {
-                  generatePrompt = `The human wants you to regenerate the comment with these instructions: ${regenPrompt.trim()}\n\nRegenerate the GitHub review comment for this issue.\n- If you now believe this issue should be dropped, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                  generatePrompt = `The human wants you to regenerate the comment with these instructions: ${regenPrompt.trim()}${styleClause}\n\nRegenerate the GitHub review comment for this issue.\n- If you now believe this issue should be dropped, respond with exactly: SKIP\n- Otherwise, output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
                 } else {
-                  generatePrompt = `Regenerate the GitHub review comment for this issue with a different approach.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                  generatePrompt = `Regenerate the GitHub review comment for this issue with a different approach.${styleClause}\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
                 }
                 // Loop continues — will regenerate
               } else {
@@ -538,9 +649,9 @@ export async function interactiveCommentReview(
                   rl.question(chalk.yellow('  Regenerate instructions: '), resolve)
                 })
                 if (regenPrompt.trim()) {
-                  generatePrompt = `The human wants you to regenerate the comment with these instructions: ${regenPrompt.trim()}\n\nRegenerate the GitHub review comment for this issue.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                  generatePrompt = `The human wants you to regenerate the comment with these instructions: ${regenPrompt.trim()}${styleClause}\n\nRegenerate the GitHub review comment for this issue.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
                 } else {
-                  generatePrompt = `Regenerate the GitHub review comment for this issue with a different approach.\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
+                  generatePrompt = `Regenerate the GitHub review comment for this issue with a different approach.${styleClause}\n- Output ONLY the comment text in markdown format.\n- End with: _Found by: ${issue.raisedBy.join(', ')} via Magpie_\nOutput nothing else.`
                 }
                 // Loop continues — will regenerate
               } else {

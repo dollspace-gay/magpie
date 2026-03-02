@@ -95,6 +95,7 @@ defaults:
   max_rounds: 5           # Maximum debate rounds
   output_format: markdown
   check_convergence: true  # Stop early when consensus reached
+  language: en             # Output language (e.g., 'zh', 'en', 'ja')
 
 # Reviewers - same perspective, different models
 reviewers:
@@ -175,6 +176,7 @@ Options:
   -a, --all                 Use all configured reviewers (skip selection)
   --git-remote <remote>     Git remote for PR URL detection (default: origin)
   --skip-context            Skip context gathering phase
+  --no-post                 Skip post-processing (GitHub comment flow)
   --plan-only               Generate review plan without executing
   --reanalyze               Force re-analyze features (ignore cache)
 
@@ -462,18 +464,42 @@ While waiting for AI reviewers, enjoy programmer jokes:
 ⠋ claude is thinking... | Why do programmers confuse Halloween and Christmas? Because Oct 31 = Dec 25
 ```
 
+### Post-Review Discussion Phase (Interactive Mode)
+
+In interactive mode (`-i`), after the debate concludes, you can enter a **discussion phase** to chat with any role (reviewers, analyzer, or summarizer) before the comment posting step:
+
+- Pick any role by number to start a conversation
+- Each role maintains a persistent session with full PR context and its original review analysis
+- Use `/skip` to exit the entire discussion phase
+- Useful for clarifying issues, asking follow-up questions, or getting deeper insights before deciding which comments to post
+
+```
+  Available roles:
+    [1] claude-code
+    [2] gemini-cli
+    [3] analyzer
+    [4] summarizer
+
+  Pick a role by number (or Enter to exit discussion):
+```
+
 ### Post-Processing (PR Review)
 
 After the debate concludes, Magpie extracts structured issues and lets you review them one by one:
 
+- **Comment style prompt**: Before the issue loop, you can provide style instructions (e.g., "be concise", "use Chinese") that apply to all generated comments
 - **Progress tracking**: Shows running tally of posted/edited/discussed/skipped issues
 - **Per-issue actions**:
-  - **Post** (`y`) — Posts as an inline comment on the exact PR line
+  - **Post** (`p`) — Posts as an inline comment on the exact PR line
   - **Edit** (`e`) — Edit the comment before posting
-  - **Discuss** (`d`) — Start a multi-turn discussion with the reviewer
-  - **Skip** (`n`) — Skip this issue
+  - **Discuss** (`d`) — Start a multi-turn discussion with any role (reviewer/analyzer/summarizer)
+  - **Skip** (`s`) — Skip this issue
+  - **Quit** (`q`) — Stop processing remaining issues
+- **`/skip` and `/drop`**: During discussion, type `/skip` or `/drop` to abandon the current issue
 - **Inline comments**: Each issue is posted as an individual inline comment on the specific line in the PR diff. Falls back to a regular PR comment if the line is not in the diff.
 - **Auto-explain**: When you choose to discuss, the reviewer automatically explains the issue in detail first (where the problem is, why it's a problem, how to fix it) before you start asking questions.
+- **Comment regeneration**: After discussion, the reviewer generates a revised comment. You can post it, post the original, edit, regenerate with new instructions, or skip.
+- **`--no-post`**: Use this flag to skip the entire post-processing flow and just see the review output.
 
 ### Debug Mode
 
