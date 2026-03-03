@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
+import { preparePromptForCli } from '../utils/prompt-file.js'
 
 export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
@@ -51,6 +52,8 @@ export class GeminiCliProvider implements AIProvider {
   }
 
   private runGemini(prompt: string): Promise<string> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     return new Promise((resolve, reject) => {
       const args = ['-y', '-o', 'json', '-p', '-']
       if (this.sessionEnabled && this.sessionId) {
@@ -62,7 +65,9 @@ export class GeminiCliProvider implements AIProvider {
         stdio: ['pipe', 'pipe', 'pipe']
       })
 
-      child.stdin.write(prompt)
+      // Suppress EPIPE: if child exits early, close handler reports the real error
+      child.stdin.on('error', () => {})
+      child.stdin.write(stdinPrompt)
       child.stdin.end()
 
       let output = ''
@@ -77,6 +82,7 @@ export class GeminiCliProvider implements AIProvider {
       })
 
       child.on('close', (code) => {
+        cleanup()
         if (code !== 0) {
           reject(new Error(`Gemini CLI exited with code ${code}: ${error}`))
         } else {
@@ -95,12 +101,15 @@ export class GeminiCliProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        cleanup()
         reject(new Error(`Failed to run gemini CLI: ${err.message}`))
       })
     })
   }
 
   private async *runGeminiStream(prompt: string): AsyncGenerator<string, void, unknown> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     const args = ['-y', '-o', 'stream-json', '-p', '-']
     if (this.sessionEnabled && this.sessionId) {
       args.push('--resume', this.sessionId)
@@ -110,9 +119,6 @@ export class GeminiCliProvider implements AIProvider {
       cwd: this.cwd,
       stdio: ['pipe', 'pipe', 'pipe']
     })
-
-    child.stdin.write(prompt)
-    child.stdin.end()
 
     const chunks: string[] = []
     let resolveNext: ((value: { chunk: string | null }) => void) | null = null
@@ -171,6 +177,7 @@ export class GeminiCliProvider implements AIProvider {
     })
 
     child.on('close', (code) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       // Process any remaining data in line buffer
       if (lineBuf.trim()) {
@@ -195,6 +202,7 @@ export class GeminiCliProvider implements AIProvider {
     })
 
     child.on('error', (err) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       error = new Error(`Failed to run gemini CLI: ${err.message}`)
@@ -202,6 +210,12 @@ export class GeminiCliProvider implements AIProvider {
         resolveNext({ chunk: null })
       }
     })
+
+    // Write prompt to stdin and close
+    // Suppress EPIPE: if child exits early, close handler reports the real error
+    child.stdin.on('error', () => {})
+    child.stdin.write(stdinPrompt)
+    child.stdin.end()
 
     while (!done || chunks.length > 0) {
       if (chunks.length > 0) {

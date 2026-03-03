@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
+import { preparePromptForCli } from '../utils/prompt-file.js'
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
@@ -46,7 +47,16 @@ export class ClaudeCodeProvider implements AIProvider {
     this.session.markMessageSent()
   }
 
+  // Spawn env: clear CLAUDECODE to avoid nested session detection when run from Claude Code
+  private spawnEnv() {
+    const env = { ...process.env }
+    delete env.CLAUDECODE
+    return env
+  }
+
   private runClaude(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     return new Promise((resolve, reject) => {
       // Build args based on session state
       // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
@@ -69,7 +79,8 @@ export class ClaudeCodeProvider implements AIProvider {
 
       const child = spawn('claude', args, {
         cwd: this.cwd,
-        stdio: ['pipe', 'pipe', 'pipe']
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: this.spawnEnv()
       })
 
       let output = ''
@@ -84,6 +95,7 @@ export class ClaudeCodeProvider implements AIProvider {
       })
 
       child.on('close', (code) => {
+        cleanup()
         if (code !== 0) {
           reject(new Error(`Claude CLI exited with code ${code}: ${error}`))
         } else {
@@ -92,16 +104,21 @@ export class ClaudeCodeProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        cleanup()
         reject(new Error(`Failed to run claude CLI: ${err.message}`))
       })
 
       // Write prompt to stdin and close
-      child.stdin.write(prompt)
+      // Suppress EPIPE: if child exits early, close handler reports the real error
+      child.stdin.on('error', () => {})
+      child.stdin.write(stdinPrompt)
       child.stdin.end()
     })
   }
 
   private async *runClaudeStream(prompt: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     // Build args based on session state
     // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
     const args = ['-p', '-', '--dangerously-skip-permissions']
@@ -118,7 +135,8 @@ export class ClaudeCodeProvider implements AIProvider {
 
     const child = spawn('claude', args, {
       cwd: this.cwd,
-      stdio: ['pipe', 'pipe', 'pipe']
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: this.spawnEnv()
     })
 
     const chunks: string[] = []
@@ -150,15 +168,18 @@ export class ClaudeCodeProvider implements AIProvider {
       }
     })
 
-    child.stderr.on('data', (_data) => {
+    let stderrOutput = ''
+    child.stderr.on('data', (data) => {
       lastActivity = Date.now()  // Activity on stderr also counts
+      stderrOutput += data.toString()
     })
 
     child.on('close', (code) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       if (code !== 0 && !error) {
-        error = new Error(`Claude CLI exited with code ${code}`)
+        error = new Error(`Claude CLI exited with code ${code}${stderrOutput ? ': ' + stderrOutput.slice(0, 500) : ''}`)
       }
       if (resolveNext) {
         resolveNext({ chunk: null })
@@ -166,6 +187,7 @@ export class ClaudeCodeProvider implements AIProvider {
     })
 
     child.on('error', (err) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       error = new Error(`Failed to run claude CLI: ${err.message}`)
@@ -175,7 +197,9 @@ export class ClaudeCodeProvider implements AIProvider {
     })
 
     // Write prompt to stdin and close
-    child.stdin.write(prompt)
+    // Suppress EPIPE: if child exits early, close handler reports the real error
+    child.stdin.on('error', () => {})
+    child.stdin.write(stdinPrompt)
     child.stdin.end()
 
     while (!done || chunks.length > 0) {

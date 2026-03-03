@@ -1,6 +1,7 @@
 import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
+import { preparePromptForCli } from '../utils/prompt-file.js'
 
 export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
@@ -81,6 +82,8 @@ export class CodexCliProvider implements AIProvider {
   }
 
   private runCodex(prompt: string): Promise<string> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     return new Promise((resolve, reject) => {
       const args = this.buildArgs()
       const child = spawn('codex', args, {
@@ -100,6 +103,7 @@ export class CodexCliProvider implements AIProvider {
       })
 
       child.on('close', (code) => {
+        cleanup()
         if (code !== 0) {
           reject(new Error(`Codex CLI exited with code ${code}: ${error}`))
         } else {
@@ -108,16 +112,21 @@ export class CodexCliProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        cleanup()
         reject(new Error(`Failed to run codex CLI: ${err.message}`))
       })
 
       // Write prompt to stdin and close
-      child.stdin.write(prompt)
+      // Suppress EPIPE: if child exits early, close handler reports the real error
+      child.stdin.on('error', () => {})
+      child.stdin.write(stdinPrompt)
       child.stdin.end()
     })
   }
 
   private async *runCodexStream(prompt: string): AsyncGenerator<string, void, unknown> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     const args = this.buildArgs()
     const child = spawn('codex', args, {
       cwd: this.cwd,
@@ -183,6 +192,7 @@ export class CodexCliProvider implements AIProvider {
     })
 
     child.on('close', (code) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       // Process any remaining data in line buffer
       if (lineBuf.trim()) {
@@ -207,6 +217,7 @@ export class CodexCliProvider implements AIProvider {
     })
 
     child.on('error', (err) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       error = new Error(`Failed to run codex CLI: ${err.message}`)
@@ -216,7 +227,9 @@ export class CodexCliProvider implements AIProvider {
     })
 
     // Write prompt to stdin and close
-    child.stdin.write(prompt)
+    // Suppress EPIPE: if child exits early, close handler reports the real error
+    child.stdin.on('error', () => {})
+    child.stdin.write(stdinPrompt)
     child.stdin.end()
 
     while (!done || chunks.length > 0) {

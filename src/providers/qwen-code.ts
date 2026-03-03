@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { logger } from '../utils/logger.js'
+import { preparePromptForCli } from '../utils/prompt-file.js'
 
 export class QwenCodeProvider implements AIProvider {
   name = 'qwen-code'
@@ -47,6 +48,8 @@ export class QwenCodeProvider implements AIProvider {
   }
 
   private runQwen(prompt: string, systemPrompt?: string, options?: ChatOptions): Promise<string> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     return new Promise((resolve, reject) => {
       // qwen -p - reads from stdin; -y auto-approves; text output
       // Limit session turns to prevent autonomous tool abuse (e.g., fetching GitHub data that leaks revert info)
@@ -68,6 +71,7 @@ export class QwenCodeProvider implements AIProvider {
       })
 
       child.on('close', (code) => {
+        cleanup()
         if (code !== 0) {
           logger.debug(`[qwen-code] exit=${code} stderr=${error.slice(0, 500)}`)
           reject(new Error(`Qwen CLI exited with code ${code}: ${error}`))
@@ -77,16 +81,21 @@ export class QwenCodeProvider implements AIProvider {
       })
 
       child.on('error', (err) => {
+        cleanup()
         reject(new Error(`Failed to run qwen CLI: ${err.message}`))
       })
 
       // Write prompt to stdin and close
-      child.stdin.write(prompt)
+      // Suppress EPIPE: if child exits early, close handler reports the real error
+      child.stdin.on('error', () => {})
+      child.stdin.write(stdinPrompt)
       child.stdin.end()
     })
   }
 
   private async *runQwenStream(prompt: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
+    const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
+
     // Limit session turns to prevent autonomous tool abuse
     const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
 
@@ -129,6 +138,7 @@ export class QwenCodeProvider implements AIProvider {
     })
 
     child.on('close', (code) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       if (code !== 0 && !error) {
@@ -140,6 +150,7 @@ export class QwenCodeProvider implements AIProvider {
     })
 
     child.on('error', (err) => {
+      cleanup()
       if (timeoutChecker) clearInterval(timeoutChecker)
       done = true
       error = new Error(`Failed to run qwen CLI: ${err.message}`)
@@ -149,7 +160,9 @@ export class QwenCodeProvider implements AIProvider {
     })
 
     // Write prompt to stdin and close
-    child.stdin.write(prompt)
+    // Suppress EPIPE: if child exits early, close handler reports the real error
+    child.stdin.on('error', () => {})
+    child.stdin.write(stdinPrompt)
     child.stdin.end()
 
     while (!done || chunks.length > 0) {
