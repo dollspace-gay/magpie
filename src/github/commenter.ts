@@ -63,7 +63,7 @@ export function getPRHeadSha(prNumber: string, repo?: string): string {
 /**
  * Parse a unified diff patch to extract valid right-side line numbers.
  */
-function parseDiffLines(patch: string): Set<number> {
+export function parseDiffLines(patch: string): Set<number> {
   const lines = new Set<number>()
   const patchLines = patch.split('\n')
   let rightLine = 0
@@ -91,6 +91,30 @@ function parseDiffLines(patch: string): Set<number> {
   }
 
   return lines
+}
+
+/**
+ * Find the nearest valid diff line to a target line.
+ * Returns null if the set is empty or closest line is more than 20 lines away.
+ */
+export function findNearestLine(diffLines: Set<number>, targetLine: number): number | null {
+  if (diffLines.size === 0) return null
+
+  let nearest: number | null = null
+  let minDist = Infinity
+
+  for (const line of diffLines) {
+    const dist = Math.abs(line - targetLine)
+    if (dist < minDist) {
+      minDist = dist
+      nearest = line
+    }
+  }
+
+  if (nearest !== null && minDist <= 20) {
+    return nearest
+  }
+  return null
 }
 
 /**
@@ -192,6 +216,16 @@ export function classifyComments(
     const fileLines = diffInfo.get(c.path)
     if (fileLines && c.line != null && fileLines.has(c.line)) {
       return { input: c, mode: 'inline' as const }
+    } else if (fileLines && c.line != null) {
+      // File is in diff but exact line isn't — try nearest valid diff line
+      const nearest = findNearestLine(fileLines, c.line)
+      if (nearest !== null) {
+        return {
+          input: { ...c, line: nearest, body: `**Line ${c.line}:**\n\n${c.body}` },
+          mode: 'inline' as const
+        }
+      }
+      return { input: c, mode: 'file' as const }
     } else if (fileLines) {
       return { input: c, mode: 'file' as const }
     } else {

@@ -20,6 +20,19 @@ export class InterruptedError extends Error {
   constructor() { super('Interrupted by user') }
 }
 
+/**
+ * Extract changed file paths from a diff/prompt containing `diff --git` headers.
+ */
+export function extractChangedFiles(taskPrompt: string): string[] {
+  const files: string[] = []
+  const regex = /diff --git a\/.+ b\/(.+)/g
+  let match
+  while ((match = regex.exec(taskPrompt)) !== null) {
+    files.push(match[1])
+  }
+  return [...new Set(files)]
+}
+
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
   private summarizer: Reviewer
@@ -664,6 +677,12 @@ Previous rounds discussion:`
 
     const reviewerIds = [...lastMessages.keys()].join(', ')
 
+    // Extract changed files from the diff to constrain structurizer output
+    const changedFiles = extractChangedFiles(this.taskPrompt)
+    const changedFilesConstraint = changedFiles.length > 0
+      ? `\n- IMPORTANT: Only reference files that are in the PR diff. Changed files: ${changedFiles.join(', ')}\n- Line numbers must correspond to lines visible in the diff changes`
+      : ''
+
     const basePrompt = `Based on these code review discussions, extract ALL concrete issues mentioned by the reviewers into a structured JSON format.
 
 ${reviewText}
@@ -692,7 +711,7 @@ Rules:
 - If multiple reviewers mention the same issue, list all their IDs in raisedBy
 - Use the exact reviewer IDs: ${reviewerIds}
 - If a file path or line number is mentioned, include it; otherwise omit the field
-- Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only${this.options.language ? `\n- Write the "title", "description", and "suggestedFix" fields in ${this.options.language}. Keep JSON keys and severity/category values in English.` : ''}`
+- Severity: critical = blocks merge, high = should fix, medium = worth fixing, low = minor, nitpick = style only${changedFilesConstraint}${this.options.language ? `\n- Write the "title", "description", and "suggestedFix" fields in ${this.options.language}. Keep JSON keys and severity/category values in English.` : ''}`
 
     const systemPrompt = 'You extract structured issues from code review text. Output only valid JSON.'
     const chatOpts = { disableTools: true }
