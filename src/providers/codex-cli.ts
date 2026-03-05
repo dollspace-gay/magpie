@@ -146,6 +146,11 @@ export class CodexCliProvider implements AIProvider {
     const timeoutChecker = this.timeout > 0 ? setInterval(() => {
       if (Date.now() - lastActivity > this.timeout) {
         child.kill('SIGTERM')
+        // Force kill if SIGTERM is ignored
+        const forceKill = setTimeout(() => {
+          try { child.kill('SIGKILL') } catch {}
+        }, 5000)
+        forceKill.unref()
         done = true
         error = new Error(`Codex CLI timed out after ${this.timeout / 1000}s of inactivity`)
         if (resolveNext) {
