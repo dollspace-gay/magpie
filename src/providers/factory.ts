@@ -10,6 +10,7 @@ import { GeminiProvider } from './gemini.js'
 import { QwenCodeProvider } from './qwen-code.js'
 import { MiniMaxProvider } from './minimax.js'
 import { MockProvider } from './mock.js'
+import { checkCliBinary } from './cli-check.js'
 
 export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'minimax' | 'mock' {
   if (model === 'claude-code') {
@@ -52,21 +53,25 @@ export function createProvider(model: string, config: MagpieConfig): AIProvider 
 
   // Claude Code doesn't need API key config
   if (providerName === 'claude-code') {
+    checkCliBinary('claude', 'Claude Code')
     return new ClaudeCodeProvider()
   }
 
   // Codex CLI doesn't need API key config
   if (providerName === 'codex-cli') {
+    checkCliBinary('codex', 'Codex')
     return new CodexCliProvider()
   }
 
   // Gemini CLI doesn't need API key config (uses Google account)
   if (providerName === 'gemini-cli') {
+    checkCliBinary('gemini', 'Gemini')
     return new GeminiCliProvider()
   }
 
   // Qwen Code CLI doesn't need API key config (uses OAuth)
   if (providerName === 'qwen-code') {
+    checkCliBinary('qwen', 'Qwen Code')
     return new QwenCodeProvider()
   }
 
