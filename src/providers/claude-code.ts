@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
+import { withRetry } from '../utils/retry.js'
 
 export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
@@ -34,7 +35,7 @@ export class ClaudeCodeProvider implements AIProvider {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
-    const result = await this.runClaude(prompt, systemPrompt, options)
+    const result = await withRetry(() => this.runClaude(prompt, systemPrompt, options))
     this.session.markMessageSent()
     return result
   }

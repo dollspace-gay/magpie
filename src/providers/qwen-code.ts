@@ -3,6 +3,7 @@ import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.
 import { CliSessionHelper } from './session-helper.js'
 import { logger } from '../utils/logger.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
+import { withRetry } from '../utils/retry.js'
 
 export class QwenCodeProvider implements AIProvider {
   name = 'qwen-code'
@@ -34,7 +35,7 @@ export class QwenCodeProvider implements AIProvider {
     const prompt = this.session.shouldSendFullHistory()
       ? this.session.buildPrompt(messages, systemPrompt)
       : this.session.buildPromptLastOnly(messages)
-    const result = await this.runQwen(prompt, systemPrompt, options)
+    const result = await withRetry(() => this.runQwen(prompt, systemPrompt, options))
     this.session.markMessageSent()
     return result
   }

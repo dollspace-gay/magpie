@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
+import { withRetry } from '../utils/retry.js'
 
 export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
@@ -38,7 +39,7 @@ export class GeminiCliProvider implements AIProvider {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
-    const result = await this.runGemini(prompt)
+    const result = await withRetry(() => this.runGemini(prompt))
     this.session.markMessageSent()
     return result
   }

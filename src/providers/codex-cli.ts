@@ -2,6 +2,7 @@ import { spawn } from 'child_process'
 import type { AIProvider, Message, ProviderOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
+import { withRetry } from '../utils/retry.js'
 
 export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
@@ -38,7 +39,7 @@ export class CodexCliProvider implements AIProvider {
     const prompt = this.sessionEnabled && !this.session.shouldSendFullHistory()
       ? this.session.buildPromptLastOnly(messages)
       : this.session.buildPrompt(messages, systemPrompt)
-    const result = await this.runCodex(prompt)
+    const result = await withRetry(() => this.runCodex(prompt))
     this.session.markMessageSent()
     return result
   }

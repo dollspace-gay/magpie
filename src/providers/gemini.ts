@@ -49,7 +49,7 @@ export class GeminiProvider implements AIProvider {
     const chat = model.startChat({ history })
 
     const lastMessage = messages[messages.length - 1]
-    const result = await chat.sendMessageStream(lastMessage.content)
+    const result = await withRetry(() => chat.sendMessageStream(lastMessage.content))
 
     for await (const chunk of result.stream) {
       const text = chunk.text()
