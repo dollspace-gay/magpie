@@ -482,7 +482,11 @@ export const discussCommand = new Command('discuss')
           console.error(chalk.dim(`Available: ${allReviewerIds.join(', ')}`))
           process.exit(1)
         }
-      } else if (options.all) {
+      } else if (options.all || !process.stdin.isTTY) {
+        // Use all reviewers (also auto-select in non-TTY mode to prevent hanging)
+        if (!process.stdin.isTTY) {
+          console.log(chalk.yellow('Non-interactive mode detected, using all reviewers.'))
+        }
         selectedIds = allReviewerIds
       } else {
         // Pass undefined - selectReviewers will create its own temporary readline

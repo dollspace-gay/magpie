@@ -290,8 +290,11 @@ export const reviewCommand = new Command('review')
           rl?.close()
           process.exit(1)
         }
-      } else if (options.all) {
-        // Use all reviewers
+      } else if (options.all || !process.stdin.isTTY) {
+        // Use all reviewers (also auto-select in non-TTY mode to prevent hanging)
+        if (!process.stdin.isTTY) {
+          console.log(chalk.yellow('Non-interactive mode detected, using all reviewers.'))
+        }
         selectedIds = allReviewerIds
       } else {
         // Default: interactive selection (pass rl to reuse it)
