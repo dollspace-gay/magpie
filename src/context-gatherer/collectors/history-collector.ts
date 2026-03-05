@@ -1,5 +1,5 @@
 // src/context-gatherer/collectors/history-collector.ts
-import { execSync } from 'child_process'
+import { spawnSync } from 'child_process'
 import type { RawHistoryItem, RelatedPR } from '../types.js'
 
 /**
@@ -16,16 +16,20 @@ export function getFileHistory(
 
   try {
     // Get commits that touched these files in the last N days
-    const fileArgs = files.map(f => `"${f}"`).join(' ')
-    const result = execSync(
-      `git log --since="${maxDays} days ago" --pretty=format:"%H|%s|%an|%aI" --name-only -- ${fileArgs}`,
-      { cwd, encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 }
-    )
+    const result = spawnSync('git', [
+      'log',
+      `--since=${maxDays} days ago`,
+      '--pretty=format:%H|%s|%an|%aI',
+      '--name-only',
+      '--',
+      ...files,
+    ], { cwd, encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 })
 
-    if (!result.trim()) return history
+    const output = result.stdout || ''
+    if (!output.trim()) return history
 
     // Parse git log output
-    const entries = result.trim().split('\n\n')
+    const entries = output.trim().split('\n\n')
     for (const entry of entries) {
       const lines = entry.trim().split('\n')
       if (lines.length < 2) continue
@@ -79,12 +83,17 @@ export function getDirectories(files: string[]): string[] {
  * Get PR details using gh CLI
  */
 export function getPRDetails(prNumber: number, cwd: string = process.cwd()): RelatedPR | null {
+  if (!Number.isInteger(prNumber) || prNumber <= 0) return null
+
   try {
-    const result = execSync(
-      `gh pr view ${prNumber} --json number,title,author,mergedAt,files`,
-      { cwd, encoding: 'utf-8' }
-    )
-    const data = JSON.parse(result)
+    const result = spawnSync('gh', [
+      'pr', 'view', String(prNumber),
+      '--json', 'number,title,author,mergedAt,files',
+    ], { cwd, encoding: 'utf-8' })
+
+    if (result.status !== 0) return null
+
+    const data = JSON.parse(result.stdout)
     return {
       number: data.number,
       title: data.title,

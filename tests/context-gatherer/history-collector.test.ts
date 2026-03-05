@@ -1,6 +1,15 @@
 // tests/context-gatherer/history-collector.test.ts
 import { describe, it, expect } from 'vitest'
-import { getDirectories } from '../../src/context-gatherer/collectors/history-collector.js'
+import { getDirectories, getPRDetails } from '../../src/context-gatherer/collectors/history-collector.js'
+
+describe('getPRDetails', () => {
+  it('should return null for invalid PR numbers', () => {
+    expect(getPRDetails(-1)).toBeNull()
+    expect(getPRDetails(0)).toBeNull()
+    expect(getPRDetails(NaN)).toBeNull()
+    expect(getPRDetails(1.5)).toBeNull()
+  })
+})
 
 describe('getDirectories', () => {
   it('should extract directories from file paths', () => {
