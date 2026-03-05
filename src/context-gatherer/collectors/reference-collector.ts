@@ -1,5 +1,5 @@
 // src/context-gatherer/collectors/reference-collector.ts
-import { execSync } from 'child_process'
+import { spawnSync } from 'child_process'
 import type { RawReference } from '../types.js'
 
 /**
@@ -48,15 +48,19 @@ export function findReferences(symbols: string[], cwd: string = process.cwd()): 
     try {
       // Use ripgrep to find all occurrences
       // -n: line numbers, -H: filename, --no-heading: no grouping
-      const result = execSync(
-        `rg -n -H --no-heading "${symbol}" --type ts --type js --type tsx --type jsx 2>/dev/null || true`,
-        { cwd, encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 }
-      )
+      // -F: fixed-string (literal match, no regex), -e: explicitly marks pattern argument
+      const result = spawnSync('rg', [
+        '-n', '-H', '--no-heading',
+        '-F',
+        '-e', symbol,
+        '--type', 'ts', '--type', 'js',
+      ], { cwd, encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 })
 
-      if (!result.trim()) continue
+      const output = result.stdout || ''
+      if (!output.trim()) continue
 
       const foundInFiles: { file: string; line: number; content: string }[] = []
-      const lines = result.trim().split('\n')
+      const lines = output.trim().split('\n')
 
       for (const line of lines) {
         // Format: file:line:content

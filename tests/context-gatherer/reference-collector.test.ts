@@ -1,6 +1,6 @@
 // tests/context-gatherer/reference-collector.test.ts
 import { describe, it, expect } from 'vitest'
-import { extractSymbolsFromDiff, formatCallChainForReviewer } from '../../src/context-gatherer/collectors/reference-collector.js'
+import { extractSymbolsFromDiff, findReferences, formatCallChainForReviewer } from '../../src/context-gatherer/collectors/reference-collector.js'
 import type { RawReference } from '../../src/context-gatherer/types.js'
 
 describe('extractSymbolsFromDiff', () => {
@@ -42,6 +42,13 @@ describe('extractSymbolsFromDiff', () => {
     const symbols = extractSymbolsFromDiff(diff)
     expect(symbols).not.toContain('do')
     expect(symbols).not.toContain('x')
+  })
+})
+
+describe('findReferences', () => {
+  it('should safely handle symbols with shell metacharacters', () => {
+    const result = findReferences(['$(whoami)', 'test;rm', '`id`'], '/tmp')
+    expect(Array.isArray(result)).toBe(true)
   })
 })
 
