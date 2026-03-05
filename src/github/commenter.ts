@@ -95,9 +95,9 @@ export function parseDiffLines(patch: string): Set<number> {
 
 /**
  * Find the nearest valid diff line to a target line.
- * Returns null if the set is empty or closest line is more than 20 lines away.
+ * Returns null if the set is empty or closest line is beyond maxDistance.
  */
-export function findNearestLine(diffLines: Set<number>, targetLine: number): number | null {
+export function findNearestLine(diffLines: Set<number>, targetLine: number, maxDistance: number = 50): number | null {
   if (diffLines.size === 0) return null
 
   let nearest: number | null = null
@@ -111,14 +111,70 @@ export function findNearestLine(diffLines: Set<number>, targetLine: number): num
     }
   }
 
-  if (nearest !== null && minDist <= 20) {
+  if (nearest !== null && minDist <= maxDistance) {
     return nearest
   }
   return null
 }
 
 /**
+ * Extract the first substantial code snippet from a markdown comment body.
+ * Looks for fenced code blocks or inline code references.
+ */
+export function extractCodeFromBody(body: string): string | null {
+  // Try fenced code block first
+  const codeBlockMatch = body.match(/```[^\n]*\n([\s\S]*?)```/)
+  if (codeBlockMatch) {
+    const lines = codeBlockMatch[1].split('\n').map(l => l.trim()).filter(l => l.length >= 8)
+    if (lines.length > 0) return lines[0]
+  }
+
+  // Try inline code with substantial content
+  const inlineMatch = body.match(/`([^`]{8,80})`/)
+  if (inlineMatch) return inlineMatch[1].trim()
+
+  return null
+}
+
+/**
+ * Find a diff line number by matching code content in the patch.
+ * Returns the right-side line number where the code appears, or null.
+ */
+export function findLineByContent(patch: string, codeSnippet: string): number | null {
+  if (!patch || !codeSnippet) return null
+
+  const normalized = codeSnippet.trim()
+  if (normalized.length < 8) return null
+
+  const patchLines = patch.split('\n')
+  let rightLine = 0
+
+  for (const line of patchLines) {
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+    if (hunkMatch) {
+      rightLine = parseInt(hunkMatch[1])
+      continue
+    }
+
+    if (rightLine === 0) continue
+
+    if (line.startsWith('+') || line.startsWith(' ')) {
+      const content = line.slice(1).trim()
+      if (content.includes(normalized) || normalized.includes(content)) {
+        return rightLine
+      }
+      rightLine++
+    } else if (line.startsWith('-')) {
+      // Left side only — don't increment
+    }
+  }
+
+  return null
+}
+
+/**
  * Get diff info for a PR: maps file path → set of right-side line numbers.
+ * Falls back to full diff when per-file patches are missing (large files).
  */
 function getDiffInfo(prNumber: string, repo: string): Map<string, Set<number>> {
   const result = execSync(
@@ -127,12 +183,90 @@ function getDiffInfo(prNumber: string, repo: string): Map<string, Set<number>> {
   )
   const files = JSON.parse(result)
   const diffInfo = new Map<string, Set<number>>()
+  // Also store raw patches for content-based matching
+  const patchMap = new Map<string, string>()
 
+  let hasNullPatch = false
   for (const file of files) {
-    diffInfo.set(file.filename, file.patch ? parseDiffLines(file.patch) : new Set())
+    if (file.patch) {
+      diffInfo.set(file.filename, parseDiffLines(file.patch))
+      patchMap.set(file.filename, file.patch)
+    } else {
+      hasNullPatch = true
+      diffInfo.set(file.filename, new Set())
+    }
   }
 
+  // Fallback: fetch full diff for files with missing patches (large files)
+  if (hasNullPatch) {
+    try {
+      const fullDiff = execSync(
+        `gh api repos/${repo}/pulls/${prNumber} -H "Accept: application/vnd.github.v3.diff"`,
+        { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 }
+      )
+      parseFullDiffInto(fullDiff, diffInfo, patchMap)
+    } catch {
+      // Ignore — files with null patches stay with empty sets
+    }
+  }
+
+  // Expose patchMap for content-based matching
+  ;(diffInfo as DiffInfoWithPatches).__patches = patchMap
   return diffInfo
+}
+
+/** Extended type to carry raw patches alongside line sets */
+interface DiffInfoWithPatches extends Map<string, Set<number>> {
+  __patches?: Map<string, string>
+}
+
+/**
+ * Parse a full unified diff and fill in missing per-file line sets.
+ */
+function parseFullDiffInto(
+  fullDiff: string,
+  diffInfo: Map<string, Set<number>>,
+  patchMap: Map<string, string>
+): void {
+  let currentFile = ''
+  let currentPatch = ''
+
+  for (const line of fullDiff.split('\n')) {
+    const fileMatch = line.match(/^diff --git a\/.+ b\/(.+)/)
+    if (fileMatch) {
+      // Process previous file
+      if (currentFile && diffInfo.has(currentFile) && diffInfo.get(currentFile)!.size === 0 && currentPatch) {
+        const lines = parseDiffLines(currentPatch)
+        if (lines.size > 0) {
+          diffInfo.set(currentFile, lines)
+          patchMap.set(currentFile, currentPatch)
+        }
+      }
+      currentFile = fileMatch[1]
+      currentPatch = ''
+      continue
+    }
+
+    // Skip non-patch headers
+    if (line.startsWith('index ') || line.startsWith('--- ') || line.startsWith('+++ ') ||
+        line.startsWith('new file') || line.startsWith('deleted file') || line.startsWith('similarity') ||
+        line.startsWith('rename') || line.startsWith('old mode') || line.startsWith('new mode')) {
+      continue
+    }
+
+    if (currentFile) {
+      currentPatch += line + '\n'
+    }
+  }
+
+  // Process last file
+  if (currentFile && diffInfo.has(currentFile) && diffInfo.get(currentFile)!.size === 0 && currentPatch) {
+    const lines = parseDiffLines(currentPatch)
+    if (lines.size > 0) {
+      diffInfo.set(currentFile, lines)
+      patchMap.set(currentFile, currentPatch)
+    }
+  }
 }
 
 /**
@@ -212,12 +346,29 @@ export function classifyComments(
   const resolvedRepo = getRepo(repo)
   const diffInfo = getDiffInfo(prNumber, resolvedRepo)
 
+  const patchMap = (diffInfo as DiffInfoWithPatches).__patches ?? new Map<string, string>()
+
   return comments.map(c => {
     const fileLines = diffInfo.get(c.path)
     if (fileLines && c.line != null && fileLines.has(c.line)) {
       return { input: c, mode: 'inline' as const }
     } else if (fileLines && c.line != null) {
-      // File is in diff but exact line isn't — try nearest valid diff line
+      // File is in diff but exact line isn't — try content-based match first
+      const patch = patchMap.get(c.path)
+      if (patch) {
+        const codeSnippet = extractCodeFromBody(c.body)
+        if (codeSnippet) {
+          const contentLine = findLineByContent(patch, codeSnippet)
+          if (contentLine !== null && fileLines.has(contentLine)) {
+            return {
+              input: { ...c, line: contentLine, body: `**Line ${c.line}:**\n\n${c.body}` },
+              mode: 'inline' as const
+            }
+          }
+        }
+      }
+
+      // Fall back to nearest valid diff line (wider radius: 50 lines)
       const nearest = findNearestLine(fileLines, c.line)
       if (nearest !== null) {
         return {
@@ -227,6 +378,20 @@ export function classifyComments(
       }
       return { input: c, mode: 'file' as const }
     } else if (fileLines) {
+      // File in diff but no line number — try content-based match
+      const patch = patchMap.get(c.path)
+      if (patch) {
+        const codeSnippet = extractCodeFromBody(c.body)
+        if (codeSnippet) {
+          const contentLine = findLineByContent(patch, codeSnippet)
+          if (contentLine !== null && fileLines.has(contentLine)) {
+            return {
+              input: { ...c, line: contentLine },
+              mode: 'inline' as const
+            }
+          }
+        }
+      }
       return { input: c, mode: 'file' as const }
     } else {
       return { input: c, mode: 'global' as const }

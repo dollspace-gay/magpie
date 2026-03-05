@@ -1,6 +1,6 @@
 // tests/github/commenter.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { getPRHeadSha, classifyComments, postReview, parseDiffLines, findNearestLine } from '../../src/github/commenter'
+import { getPRHeadSha, classifyComments, postReview, parseDiffLines, findNearestLine, extractCodeFromBody, findLineByContent } from '../../src/github/commenter'
 
 // Mock child_process — all exported functions use execSync
 vi.mock('child_process', () => ({
@@ -188,15 +188,65 @@ describe('findNearestLine', () => {
   })
 
   it('returns null when all lines are too far away', () => {
-    expect(findNearestLine(new Set([1, 2, 3]), 50)).toBeNull()
+    expect(findNearestLine(new Set([1, 2, 3]), 100)).toBeNull()
   })
 
-  it('returns line at exactly 20 distance', () => {
+  it('returns line within default 50 distance', () => {
     expect(findNearestLine(new Set([30]), 10)).toBe(30)
   })
 
-  it('returns null at 21 distance', () => {
-    expect(findNearestLine(new Set([31]), 10)).toBeNull()
+  it('returns line at exactly 50 distance (new default)', () => {
+    expect(findNearestLine(new Set([60]), 10)).toBe(60)
+  })
+
+  it('returns null at 51 distance', () => {
+    expect(findNearestLine(new Set([61]), 10)).toBeNull()
+  })
+
+  it('respects custom maxDistance', () => {
+    expect(findNearestLine(new Set([31]), 10, 20)).toBeNull()
+    expect(findNearestLine(new Set([31]), 10, 25)).toBe(31)
+  })
+})
+
+describe('extractCodeFromBody', () => {
+  it('extracts code from fenced code block', () => {
+    const body = 'The issue is here:\n```typescript\nfunction processOrder(data) {\n  return data\n}\n```'
+    expect(extractCodeFromBody(body)).toBe('function processOrder(data) {')
+  })
+
+  it('extracts inline code', () => {
+    const body = 'The variable `processOrderData` should be validated'
+    expect(extractCodeFromBody(body)).toBe('processOrderData')
+  })
+
+  it('returns null when no code found', () => {
+    expect(extractCodeFromBody('No code here')).toBeNull()
+  })
+
+  it('skips very short code snippets', () => {
+    expect(extractCodeFromBody('Use `x = 1` here')).toBeNull()
+  })
+})
+
+describe('findLineByContent', () => {
+  const patch = '@@ -1,3 +1,5 @@\n context line one\n+function processOrder(data) {\n+  return data\n context three\n context four'
+
+  it('finds line by matching code content', () => {
+    expect(findLineByContent(patch, 'processOrder(data)')).toBe(2)
+  })
+
+  it('returns null when content not found', () => {
+    expect(findLineByContent(patch, 'nonexistentFunction()')).toBeNull()
+  })
+
+  it('returns null for short snippets', () => {
+    expect(findLineByContent(patch, 'data')).toBeNull()
+  })
+
+  it('returns null for empty inputs', () => {
+    expect(findLineByContent('', 'test')).toBeNull()
+    expect(findLineByContent(patch, '')).toBeNull()
   })
 })
 

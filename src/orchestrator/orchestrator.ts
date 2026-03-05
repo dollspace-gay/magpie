@@ -33,6 +33,40 @@ export function extractChangedFiles(taskPrompt: string): string[] {
   return [...new Set(files)]
 }
 
+/**
+ * Extract per-file hunk line ranges from a unified diff.
+ * Returns a formatted string like:
+ *   src/foo.ts: 35-46, 80-95
+ *   src/bar.ts: 10-25
+ */
+export function extractDiffLineRanges(diff: string): string {
+  const ranges = new Map<string, Array<string>>()
+  let currentFile = ''
+
+  for (const line of diff.split('\n')) {
+    const fileMatch = line.match(/^diff --git a\/.+ b\/(.+)/)
+    if (fileMatch) {
+      currentFile = fileMatch[1]
+      continue
+    }
+
+    const hunkMatch = line.match(/^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/)
+    if (hunkMatch && currentFile) {
+      const start = parseInt(hunkMatch[1])
+      const count = hunkMatch[2] ? parseInt(hunkMatch[2]) : 1
+      const end = start + count - 1
+      if (!ranges.has(currentFile)) {
+        ranges.set(currentFile, [])
+      }
+      ranges.get(currentFile)!.push(end > start ? `${start}-${end}` : `${start}`)
+    }
+  }
+
+  return [...ranges.entries()]
+    .map(([file, r]) => `  ${file}: ${r.join(', ')}`)
+    .join('\n')
+}
+
 export class DebateOrchestrator {
   private reviewers: Reviewer[]
   private summarizer: Reviewer
@@ -700,11 +734,16 @@ Previous rounds discussion:`
 
     const reviewerIds = [...lastMessages.keys()].join(', ')
 
-    // Extract changed files from the diff to constrain structurizer output
+    // Extract changed files and valid line ranges from the diff to constrain structurizer output
     const changedFiles = extractChangedFiles(this.taskPrompt)
-    const changedFilesConstraint = changedFiles.length > 0
-      ? `\n- IMPORTANT: Only reference files that are in the PR diff. Changed files: ${changedFiles.join(', ')}\n- Line numbers must correspond to lines visible in the diff changes`
-      : ''
+    const diffLineRanges = extractDiffLineRanges(this.taskPrompt)
+    let changedFilesConstraint = ''
+    if (changedFiles.length > 0) {
+      changedFilesConstraint = `\n- IMPORTANT: Only reference files that are in the PR diff. Changed files: ${changedFiles.join(', ')}`
+      if (diffLineRanges) {
+        changedFilesConstraint += `\n- CRITICAL: The "line" field MUST be a number within these valid diff ranges (GitHub rejects comments on other lines). If an issue is about code outside these ranges, omit the "line" field entirely.\nValid line ranges per file:\n${diffLineRanges}`
+      }
+    }
 
     const basePrompt = `Based on these code review discussions, extract ALL concrete issues mentioned by the reviewers into a structured JSON format.
 
