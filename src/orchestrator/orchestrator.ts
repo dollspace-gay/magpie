@@ -406,7 +406,6 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
         const results = await Promise.all(
           reviewerTasks.map(async ({ reviewer, messages }, index) => {
-            // Mark as thinking
             statuses[index] = {
               reviewerId: reviewer.id,
               status: 'thinking',
@@ -414,39 +413,63 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
             }
             this.options.onParallelStatus?.(round, statuses)
 
-            let fullResponse = ''
-            for await (const chunk of reviewer.provider.chatStream(messages, reviewer.systemPrompt)) {
-              fullResponse += chunk
-            }
+            try {
+              let fullResponse = ''
+              for await (const chunk of reviewer.provider.chatStream(messages, reviewer.systemPrompt)) {
+                fullResponse += chunk
+              }
 
-            // Mark as done
-            const endTime = Date.now()
-            const startTime = statuses[index].startTime!
-            statuses[index] = {
-              reviewerId: reviewer.id,
-              status: 'done',
-              startTime,
-              endTime,
-              duration: (endTime - startTime) / 1000
-            }
-            this.options.onParallelStatus?.(round, statuses)
+              const endTime = Date.now()
+              const startTime = statuses[index].startTime!
+              statuses[index] = {
+                reviewerId: reviewer.id,
+                status: 'done',
+                startTime,
+                endTime,
+                duration: (endTime - startTime) / 1000
+              }
+              this.options.onParallelStatus?.(round, statuses)
 
-            const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-            return { reviewer, fullResponse, inputText }
+              const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+              return { reviewer, fullResponse, inputText, failed: false as const }
+            } catch (err) {
+              const endTime = Date.now()
+              const startTime = statuses[index].startTime ?? endTime
+              statuses[index] = {
+                reviewerId: reviewer.id,
+                status: 'error',
+                startTime,
+                endTime,
+                duration: (endTime - startTime) / 1000
+              }
+              this.options.onParallelStatus?.(round, statuses)
+              logger.warn(`Reviewer ${reviewer.id} failed in round ${round}:`, err)
+              return { reviewer, fullResponse: '', inputText: '', failed: true as const, error: err }
+            }
           })
         )
 
-        // Display results and add to history (after all complete)
-        for (const { reviewer, fullResponse, inputText } of results) {
-          this.trackTokens(reviewer.id, inputText, fullResponse)
+        // Fail only if ALL reviewers failed
+        const successResults = results.filter(r => !r.failed)
+        if (successResults.length === 0) {
+          const errors = results.map(r => r.failed ? `${r.reviewer.id}: ${r.error instanceof Error ? r.error.message : r.error}` : '').filter(Boolean)
+          throw new Error(`All reviewers failed in round ${round}:\n${errors.join('\n')}`)
+        }
+
+        // Process results - only add successful ones to history
+        for (const result of results) {
+          if (result.failed) {
+            this.options.onMessage?.(result.reviewer.id, `[Review failed: ${result.error instanceof Error ? result.error.message : 'unknown error'}]`)
+            continue
+          }
+          this.trackTokens(result.reviewer.id, result.inputText, result.fullResponse)
           this.conversationHistory.push({
-            reviewerId: reviewer.id,
-            content: fullResponse,
+            reviewerId: result.reviewer.id,
+            content: result.fullResponse,
             timestamp: new Date()
           })
-          this.markAsSeen(reviewer.id)
-          // Display each reviewer's response
-          this.options.onMessage?.(reviewer.id, fullResponse)
+          this.markAsSeen(result.reviewer.id)
+          this.options.onMessage?.(result.reviewer.id, result.fullResponse)
         }
 
         // Check convergence if enabled
@@ -765,17 +788,18 @@ Use reviewer IDs: ${reviewerIds}`
     const summaryPrompt = `Please summarize your key points and conclusions. Do not reveal your identity or role.${this.langSuffix}`
 
     for (const reviewer of this.reviewers) {
-      const messages = this.buildMessages(reviewer.id)
-      messages.push({ role: 'user', content: summaryPrompt })
+      try {
+        const messages = this.buildMessages(reviewer.id)
+        messages.push({ role: 'user', content: summaryPrompt })
 
-      const summary = await reviewer.provider.chat(messages, reviewer.systemPrompt)
-      const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-      this.trackTokens(reviewer.id, inputText, summary)
+        const summary = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+        const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
+        this.trackTokens(reviewer.id, inputText, summary)
 
-      summaries.push({
-        reviewerId: reviewer.id,
-        summary
-      })
+        summaries.push({ reviewerId: reviewer.id, summary })
+      } catch (err) {
+        logger.warn(`Failed to collect summary from ${reviewer.id}:`, err)
+      }
     }
 
     return summaries
