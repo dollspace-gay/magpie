@@ -2,10 +2,21 @@ import { writeFileSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 
-// CLI tools (claude, gemini, codex, qwen) may reject prompts above ~100 KB via stdin.
-// When a prompt exceeds this threshold, write it to a temp file and send a short
-// instruction via stdin instead. The CLI tool reads the file using its built-in tools.
 const PROMPT_SIZE_THRESHOLD = 100 * 1024 // 100 KB
+
+// Track active temp files for cleanup on unexpected exit
+const activeTempFiles = new Set<string>()
+
+let exitHandlerRegistered = false
+function registerExitHandler() {
+  if (exitHandlerRegistered) return
+  exitHandlerRegistered = true
+  process.on('exit', () => {
+    for (const f of activeTempFiles) {
+      try { unlinkSync(f) } catch {}
+    }
+  })
+}
 
 export interface PreparedPrompt {
   prompt: string
@@ -17,8 +28,11 @@ export function preparePromptForCli(prompt: string): PreparedPrompt {
     return { prompt, cleanup: () => {} }
   }
 
+  registerExitHandler()
+
   const tmpFile = join(tmpdir(), `magpie_prompt_${Date.now()}_${Math.random().toString(36).slice(2)}.txt`)
   writeFileSync(tmpFile, prompt, 'utf-8')
+  activeTempFiles.add(tmpFile)
 
   const shortPrompt = [
     `The full review prompt is too large for stdin. It has been written to a file.`,
@@ -31,6 +45,7 @@ export function preparePromptForCli(prompt: string): PreparedPrompt {
   return {
     prompt: shortPrompt,
     cleanup: () => {
+      activeTempFiles.delete(tmpFile)
       try { unlinkSync(tmpFile) } catch {}
     }
   }
