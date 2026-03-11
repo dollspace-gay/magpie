@@ -104,7 +104,19 @@ export class DebateOrchestrator {
   /** Build a language instruction suffix (empty string if no language configured) */
   private get langSuffix(): string {
     if (!this.options.language) return ''
-    return `\n\nIMPORTANT: You MUST respond in ${this.options.language}.`
+    return `\n\nIMPORTANT: You MUST respond in ${this.options.language}. All your analysis, comments, and explanations must be written in ${this.options.language}.`
+  }
+
+  /** Build a language instruction prefix for system prompts (stronger than suffix) */
+  private get langPrefix(): string {
+    if (!this.options.language) return ''
+    return `[LANGUAGE REQUIREMENT] You MUST write ALL responses in ${this.options.language}. This applies to all analysis, comments, summaries, and explanations. Only code snippets, variable names, and JSON keys should remain in English.\n\n`
+  }
+
+  /** Prepend language prefix to a system prompt */
+  private withLang(systemPrompt?: string): string | undefined {
+    if (!systemPrompt) return systemPrompt
+    return this.langPrefix + systemPrompt
   }
 
   // Estimate tokens from text (CJK ~0.7 tokens/char, English ~0.25 tokens/char)
@@ -217,7 +229,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
   private async preAnalyze(prompt: string): Promise<string> {
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.analyzer.provider.chat(messages, this.analyzer.systemPrompt)
+    const response = await this.analyzer.provider.chat(messages, this.withLang(this.analyzer.systemPrompt))
     this.trackTokens('analyzer', prompt + (this.analyzer.systemPrompt || ''), response)
     return response
   }
@@ -254,7 +266,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
           }
 
           const messages = this.buildMessages(reviewer.id)
-          const response = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+          const response = await reviewer.provider.chat(messages, this.withLang(reviewer.systemPrompt))
 
           const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
           this.trackTokens(reviewer.id, inputText, response)
@@ -348,7 +360,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const analysisPromise = (async () => {
         const analyzeMessages: Message[] = [{ role: 'user', content: prompt }]
         this.options.onWaiting?.('analyzer')
-        for await (const chunk of this.analyzer.provider.chatStream(analyzeMessages, this.analyzer.systemPrompt)) {
+        for await (const chunk of this.analyzer.provider.chatStream(analyzeMessages, this.withLang(this.analyzer.systemPrompt))) {
           this.analysis += chunk
           this.options.onMessage?.('analyzer', chunk)
         }
@@ -386,7 +398,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
           let qaResponse = ''
           this.options.onWaiting?.(targetReviewer.id)
-          for await (const chunk of targetReviewer.provider.chatStream(qaMessages, targetReviewer.systemPrompt)) {
+          for await (const chunk of targetReviewer.provider.chatStream(qaMessages, this.withLang(targetReviewer.systemPrompt))) {
             qaResponse += chunk
             this.options.onMessage?.(targetReviewer.id, chunk)
           }
@@ -449,7 +461,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
             try {
               let fullResponse = ''
-              for await (const chunk of reviewer.provider.chatStream(messages, reviewer.systemPrompt)) {
+              for await (const chunk of reviewer.provider.chatStream(messages, this.withLang(reviewer.systemPrompt))) {
                 fullResponse += chunk
               }
 
@@ -831,7 +843,7 @@ Use reviewer IDs: ${reviewerIds}`
         const messages = this.buildMessages(reviewer.id)
         messages.push({ role: 'user', content: summaryPrompt })
 
-        const summary = await reviewer.provider.chat(messages, reviewer.systemPrompt)
+        const summary = await reviewer.provider.chat(messages, this.withLang(reviewer.systemPrompt))
         const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
         this.trackTokens(reviewer.id, inputText, summary)
 
@@ -857,7 +869,7 @@ Use reviewer IDs: ${reviewerIds}`
 ${summaryText}${this.langSuffix}`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
-    const response = await this.summarizer.provider.chat(messages, this.summarizer.systemPrompt)
+    const response = await this.summarizer.provider.chat(messages, this.withLang(this.summarizer.systemPrompt))
     this.trackTokens('summarizer', prompt + (this.summarizer.systemPrompt || ''), response)
     return response
   }

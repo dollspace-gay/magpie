@@ -275,7 +275,7 @@ export function buildInitialSessionContext(
   parts.push(`## All Issues Found\n\n${issueList}`)
 
   // 7. Discussion behavior guidance
-  const langRule = language ? `\n- You MUST respond in ${language}.` : ''
+  const langRule = language ? `\n- You MUST respond in ${language}. All discussion, analysis, and explanations must be in ${language}.` : ''
   parts.push(`## Discussion Guidelines\n\nWhen discussing issues:\n- Reference specific code from the diff when explaining problems\n- Be concise but thorough\n- If the human's points are valid, update your assessment\n- Be willing to change severity, revise descriptions, or withdraw issues entirely if convinced\n- Remember context from previous issue discussions in this session${langRule}`)
 
   return parts.join('\n\n---\n\n')

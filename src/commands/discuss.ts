@@ -103,13 +103,17 @@ async function selectReviewers(availableIds: string[], rl?: ReturnType<typeof cr
   })
 }
 
-// Language rule appended to all discuss prompts
-const LANGUAGE_RULE = `
-
-Language rule: You MUST respond in the same language as the user's topic/question. If the user writes in Chinese, respond in Chinese. If in English, respond in English. You may think internally in any language, but your final output must match the user's language.`
+// Build language rule for discuss prompts — uses config language if set, otherwise follows user's language
+function buildLanguageRule(language?: string): string {
+  if (language) {
+    return `\n\n[LANGUAGE REQUIREMENT] You MUST write ALL responses in ${language}. All analysis, comments, summaries, and explanations must be in ${language}. Only code snippets, variable names, and technical terms may remain in English.`
+  }
+  return `\n\nLanguage rule: You MUST respond in the same language as the user's topic/question. If the user writes in Chinese, respond in Chinese. If in English, respond in English. You may think internally in any language, but your final output must match the user's language.`
+}
 
 // Discuss-specific system prompts (override config's review-oriented prompts)
-const DISCUSS_REVIEWER_PROMPT = `You are a senior technical expert participating in a multi-perspective discussion.
+function getDiscussReviewerPrompt(language?: string): string {
+  return `You are a senior technical expert participating in a multi-perspective discussion.
 Your role is to:
 - Analyze the topic thoroughly from your unique perspective
 - Identify key considerations, trade-offs, and risks
@@ -118,9 +122,11 @@ Your role is to:
 - Support your points with evidence and reasoning
 
 Important: This is a discussion/analysis session, NOT a code review. Do not look for PRs or diffs.
-Focus on the topic at hand and provide substantive analysis.` + LANGUAGE_RULE
+Focus on the topic at hand and provide substantive analysis.` + buildLanguageRule(language)
+}
 
-const DISCUSS_ANALYZER_PROMPT = `You are a senior engineer providing initial topic analysis.
+function getDiscussAnalyzerPrompt(language?: string): string {
+  return `You are a senior engineer providing initial topic analysis.
 Before the discussion begins, analyze the topic and provide:
 
 1. **Context** - What is this about and why does it matter
@@ -130,17 +136,21 @@ Before the discussion begins, analyze the topic and provide:
 
 Important: This is a discussion/analysis session, NOT a code review.
 Do not look for PRs, diffs, or use gh commands. Focus on the topic directly.
-Be concise but thorough.` + LANGUAGE_RULE
+Be concise but thorough.` + buildLanguageRule(language)
+}
 
-const DISCUSS_SUMMARIZER_PROMPT = `You are a neutral technical moderator.
+function getDiscussSummarizerPrompt(language?: string): string {
+  return `You are a neutral technical moderator.
 Based on the anonymous participant summaries, provide:
 - Points of consensus
 - Points of disagreement with analysis
 - Recommended action items and next steps
 
-Important: This is a discussion summary, NOT a code review conclusion.` + LANGUAGE_RULE
+Important: This is a discussion summary, NOT a code review conclusion.` + buildLanguageRule(language)
+}
 
-const DEVIL_ADVOCATE_PROMPT = `You are a Devil's Advocate in a technical discussion.
+function getDevilAdvocatePrompt(language?: string): string {
+  return `You are a Devil's Advocate in a technical discussion.
 Your role is to:
 - Deliberately challenge the majority opinion and consensus
 - Find holes, edge cases, and failure modes in arguments others accept
@@ -151,7 +161,8 @@ Your role is to:
 You are NOT being contrarian for fun — your goal is to stress-test ideas so the final conclusion is robust.
 If you genuinely cannot find flaws, say so explicitly, but try hard first.
 
-Important: This is a discussion/analysis session, NOT a code review. Do not look for PRs or diffs.` + LANGUAGE_RULE
+Important: This is a discussion/analysis session, NOT a code review. Do not look for PRs or diffs.` + buildLanguageRule(language)
+}
 
 function buildDiscussPrompt(topic: string, previousContext?: string): string {
   let prompt = ''
@@ -199,10 +210,11 @@ async function runDiscussion(
   spinner: ReturnType<typeof ora>,
   interruptState?: { interrupted: boolean }
 ): Promise<{ result: DebateResult }> {
+  const lang = config.defaults.language
   const reviewers: Reviewer[] = selectedIds.map(id => ({
     id,
     provider: createProvider(config.reviewers[id].model, config),
-    systemPrompt: buildSystemPromptWithContext(DISCUSS_REVIEWER_PROMPT, config.reviewers[id].model)
+    systemPrompt: buildSystemPromptWithContext(getDiscussReviewerPrompt(lang), config.reviewers[id].model)
   }))
 
   // Add Devil's Advocate if enabled
@@ -211,7 +223,7 @@ async function runDiscussion(
     reviewers.push({
       id: 'devil-advocate',
       provider: createProvider(daModel, config),
-      systemPrompt: buildSystemPromptWithContext(DEVIL_ADVOCATE_PROMPT, daModel)
+      systemPrompt: buildSystemPromptWithContext(getDevilAdvocatePrompt(lang), daModel)
     })
   }
 
@@ -222,13 +234,13 @@ async function runDiscussion(
   const summarizer: Reviewer = {
     id: 'summarizer',
     provider: createProvider(config.summarizer.model, config),
-    systemPrompt: buildSystemPromptWithContext(DISCUSS_SUMMARIZER_PROMPT, config.summarizer.model)
+    systemPrompt: buildSystemPromptWithContext(getDiscussSummarizerPrompt(lang), config.summarizer.model)
   }
 
   const analyzer: Reviewer = {
     id: 'analyzer',
     provider: createProvider(config.analyzer.model, config),
-    systemPrompt: buildSystemPromptWithContext(DISCUSS_ANALYZER_PROMPT, config.analyzer.model)
+    systemPrompt: buildSystemPromptWithContext(getDiscussAnalyzerPrompt(lang), config.analyzer.model)
   }
 
   // Show context loading status per reviewer
@@ -284,6 +296,7 @@ async function runDiscussion(
     maxRounds,
     interactive: !!options.interactive,
     checkConvergence,
+    language: lang,
     interruptState,
     onWaiting: (reviewerId) => {
       flushBuffer()

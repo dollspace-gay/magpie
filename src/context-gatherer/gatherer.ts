@@ -99,10 +99,10 @@ export class ContextGatherer {
       docs
     }, this.language)
 
-    const langSuffix = this.language ? ` Respond in ${this.language}.` : ''
+    const langPrefix = this.language ? `[LANGUAGE REQUIREMENT] You MUST write all descriptions and summaries in ${this.language}. Only code snippets and JSON keys should remain in English.\n\n` : ''
     const response = await this.provider.chat(
       [{ role: 'user', content: prompt }],
-      `You are a senior software architect. Analyze the PR context and respond in JSON format only.${langSuffix}`
+      `${langPrefix}You are a senior software architect. Analyze the PR context and respond in JSON format only.`
     )
 
     // Parse AI response
