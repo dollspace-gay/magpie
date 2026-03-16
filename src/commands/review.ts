@@ -12,7 +12,7 @@ import TerminalRenderer from 'marked-terminal'
 import { ContextGatherer } from '../context-gatherer/index.js'
 import type { ReviewTarget, ReviewerSessionState } from './review/types.js'
 import { fixMarkdown, getRandomJoke, formatMarkdown } from './review/utils.js'
-import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion } from './review/interactive.js'
+import { selectReviewers, interactiveFollowUpQA, interactiveCommentReview, interactivePostReviewDiscussion, interactiveGeneralDiscussion } from './review/interactive.js'
 import { handleRepoReview } from './review/repo-review.js'
 import { handleListSessions, handleResumeSession, handleExportSession } from './review/session-cmds.js'
 import { filterDiff } from '../utils/diff-filter.js'
@@ -656,25 +656,50 @@ export const reviewCommand = new Command('review')
       ]
       const reviewerSessions = new Map<string, ReviewerSessionState>()
 
-      // Post-review discussion phase (all review types)
-      if (result.parsedIssues && result.parsedIssues.length > 0 && options.interactive && rl) {
-        await interactivePostReviewDiscussion(rl, allRoles, result, target, result.parsedIssues, spinnerRef, reviewerSessions, config.defaults.language)
-      }
-
-      // Post-processing: comment flow for PR reviews
+      // PR reviews: General Discussion → Issue-by-issue loop
       if (options.post !== false && target.type === 'pr' && result.parsedIssues && result.parsedIssues.length > 0) {
         if (!rl) {
           rl = createInterface({ input: process.stdin, output: process.stdout })
         }
-        // Ensure stdin is flowing (ora spinner may have paused it)
-        if (process.stdin.isPaused?.()) process.stdin.resume()
-        const enterPostProcess = await new Promise<string>(resolve => {
-          rl!.question(chalk.yellow('\n  Review and post individual comments to GitHub? (y/n): '), resolve)
-        })
-        if (enterPostProcess.trim().toLowerCase() === 'y') {
+
+        // Optional general discussion phase (chat + resolve issues inline)
+        const discussionResult = await interactiveGeneralDiscussion(
+          rl, allRoles, result, target, result.parsedIssues, spinnerRef, reviewerSessions, config.defaults.language
+        )
+
+        // Filter out issues already resolved in general discussion
+        const remainingIssues = result.parsedIssues.filter((_, i) => !discussionResult.resolvedIndices.has(i))
+
+        if (remainingIssues.length > 0) {
+          // Ensure stdin is flowing (ora spinner may have paused it)
+          if (process.stdin.isPaused?.()) process.stdin.resume()
+          const preApprovedCount = discussionResult.approvedComments.length
+          const prompt = preApprovedCount > 0
+            ? `\n  Review ${remainingIssues.length} remaining issues and post to GitHub? (${preApprovedCount} already queued) (y/n): `
+            : `\n  Review and post individual comments to GitHub? (y/n): `
+          const enterPostProcess = await new Promise<string>(resolve => {
+            rl!.question(chalk.yellow(prompt), resolve)
+          })
+          if (enterPostProcess.trim().toLowerCase() === 'y') {
+            const prNum = target.label.match(/\d+/)?.[0] || target.label
+            await interactiveCommentReview(rl!, remainingIssues, allRoles, prNum, spinnerRef, result, target, interruptState, reviewerSessions, config.defaults.language, discussionResult.approvedComments)
+          } else if (preApprovedCount > 0) {
+            // User declined issue-by-issue but has pre-approved comments — post them directly
+            const prNum = target.label.match(/\d+/)?.[0] || target.label
+            await interactiveCommentReview(rl!, [], allRoles, prNum, spinnerRef, result, target, interruptState, reviewerSessions, config.defaults.language, discussionResult.approvedComments)
+          }
+        } else if (discussionResult.approvedComments.length > 0) {
+          // All issues resolved in discussion — post approved ones
           const prNum = target.label.match(/\d+/)?.[0] || target.label
-          await interactiveCommentReview(rl!, result.parsedIssues, allRoles, prNum, spinnerRef, result, target, interruptState, reviewerSessions, config.defaults.language)
+          await interactiveCommentReview(rl!, [], allRoles, prNum, spinnerRef, result, target, interruptState, reviewerSessions, config.defaults.language, discussionResult.approvedComments)
+        } else if (discussionResult.resolvedIndices.size > 0) {
+          console.log(chalk.dim('\n  All issues resolved in discussion. Nothing to post.'))
         }
+      }
+
+      // Post-review discussion for non-PR reviews (keep existing behavior)
+      else if (result.parsedIssues && result.parsedIssues.length > 0 && options.interactive && rl) {
+        await interactivePostReviewDiscussion(rl, allRoles, result, target, result.parsedIssues, spinnerRef, reviewerSessions, config.defaults.language)
       }
 
       // Display token usage
