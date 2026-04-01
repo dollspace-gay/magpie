@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -8,16 +8,18 @@ export class GeminiCliProvider implements AIProvider {
   name = 'gemini-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private cliModel?: string
   private session = new CliSessionHelper()
   // Gemini gets its session ID from the first response (session_id in JSON)
   private sessionEnabled = false
 
   get sessionId() { return this.session.sessionId }
 
-  constructor(_options?: ProviderOptions) {
+  constructor(options?: CliProviderOptions) {
     // No API key needed for Gemini CLI (uses Google account)
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
+    this.cliModel = options?.cliModel
   }
 
   setCwd(cwd: string) {
@@ -57,6 +59,9 @@ export class GeminiCliProvider implements AIProvider {
 
     return new Promise((resolve, reject) => {
       const args = ['-y', '-o', 'json', '-p', '-']
+      if (this.cliModel) {
+        args.push('--model', this.cliModel)
+      }
       if (this.sessionEnabled && this.sessionId) {
         args.push('--resume', this.sessionId)
       }
@@ -112,6 +117,9 @@ export class GeminiCliProvider implements AIProvider {
     const { prompt: stdinPrompt, cleanup } = preparePromptForCli(prompt)
 
     const args = ['-y', '-o', 'stream-json', '-p', '-']
+    if (this.cliModel) {
+      args.push('--model', this.cliModel)
+    }
     if (this.sessionEnabled && this.sessionId) {
       args.push('--resume', this.sessionId)
     }

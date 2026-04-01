@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -8,15 +8,17 @@ export class ClaudeCodeProvider implements AIProvider {
   name = 'claude-code'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private cliModel?: string
   private session = new CliSessionHelper()
 
   get sessionId() { return this.session.sessionId }
 
-  constructor(_options?: ProviderOptions) {
+  constructor(options?: CliProviderOptions) {
     // No API key needed for Claude Code CLI
     // Use current working directory so claude can access the repo
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
+    this.cliModel = options?.cliModel
   }
 
   setCwd(cwd: string) {
@@ -62,6 +64,9 @@ export class ClaudeCodeProvider implements AIProvider {
       // Build args based on session state
       // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
       const args = ['-p', '-', '--dangerously-skip-permissions']
+      if (this.cliModel) {
+        args.push('--model', this.cliModel)
+      }
       // Disable all tools for pure text extraction (e.g., JSON structurization)
       // Without this, Claude may use Edit/Write to modify files instead of outputting text
       if (options?.disableTools) {
@@ -123,6 +128,9 @@ export class ClaudeCodeProvider implements AIProvider {
     // Build args based on session state
     // Use --dangerously-skip-permissions to allow network access (e.g., gh commands)
     const args = ['-p', '-', '--dangerously-skip-permissions']
+    if (this.cliModel) {
+      args.push('--model', this.cliModel)
+    }
     if (this.session.sessionId) {
       if (this.session.isFirstMessage) {
         args.push('--session-id', this.session.sessionId)

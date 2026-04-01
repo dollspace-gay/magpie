@@ -28,6 +28,10 @@ export interface ProviderOptions {
   baseURL?: string
 }
 
+export interface CliProviderOptions {
+  cliModel?: string  // Model to pass via --model flag to CLI tools
+}
+
 // Helper to generate session IDs
 export function generateSessionId(): string {
   return randomUUID()

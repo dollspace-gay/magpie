@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions, ChatOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions, ChatOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { logger } from '../utils/logger.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
@@ -9,14 +9,16 @@ export class QwenCodeProvider implements AIProvider {
   name = 'qwen-code'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private cliModel?: string
   private session = new CliSessionHelper()
 
   get sessionId() { return this.session.sessionId }
 
-  constructor(_options?: ProviderOptions) {
+  constructor(options?: CliProviderOptions) {
     // No API key needed for Qwen Code CLI (uses OAuth)
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
+    this.cliModel = options?.cliModel
   }
 
   setCwd(cwd: string) {
@@ -55,6 +57,9 @@ export class QwenCodeProvider implements AIProvider {
       // qwen -p - reads from stdin; -y auto-approves; text output
       // Limit session turns to prevent autonomous tool abuse (e.g., fetching GitHub data that leaks revert info)
       const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
+      if (this.cliModel) {
+        args.push('--model', this.cliModel)
+      }
       const child = spawn('qwen', args, {
         cwd: this.cwd,
         stdio: ['pipe', 'pipe', 'pipe']
@@ -99,6 +104,9 @@ export class QwenCodeProvider implements AIProvider {
 
     // Limit session turns to prevent autonomous tool abuse
     const args = ['-p', '-', '-y', '--max-session-turns', '5', '--output-format', 'text']
+    if (this.cliModel) {
+      args.push('--model', this.cliModel)
+    }
 
     const child = spawn('qwen', args, {
       cwd: this.cwd,

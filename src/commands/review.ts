@@ -385,7 +385,7 @@ export const reviewCommand = new Command('review')
 
       console.log()
       console.log(chalk.bgBlue.white.bold(` ${target.label} Review `))
-      console.log(chalk.dim(`├─ Reviewers: ${reviewers.map(r => chalk.cyan(r.id)).join(', ')}`))
+      console.log(chalk.dim(`├─ Reviewers: ${selectedIds.map(id => `${chalk.cyan(id)} ${chalk.gray('(' + config.reviewers[id].model + ')')}`).join(', ')}`))
       console.log(chalk.dim(`├─ Max rounds: ${maxRounds}`))
       console.log(chalk.dim(`├─ Convergence: ${checkConvergence ? 'enabled' : 'disabled'}`))
       console.log(chalk.dim(`└─ Context gathering: ${contextEnabled ? 'enabled' : 'disabled'}`))

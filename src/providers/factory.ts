@@ -12,32 +12,41 @@ import { MiniMaxProvider } from './minimax.js'
 import { MockProvider } from './mock.js'
 import { checkCliBinary } from './cli-check.js'
 
+// Parse CLI model string: 'gemini-cli:gemini-2.5-pro' → { provider: 'gemini-cli', cliModel: 'gemini-2.5-pro' }
+// Plain 'gemini-cli' → { provider: 'gemini-cli', cliModel: undefined }
+const CLI_PROVIDERS = ['claude-code', 'codex-cli', 'gemini-cli', 'qwen-code'] as const
+type CliProviderName = typeof CLI_PROVIDERS[number]
+
+export function parseCliModel(model: string): { provider: string; cliModel?: string } {
+  for (const cli of CLI_PROVIDERS) {
+    if (model === cli) {
+      return { provider: cli }
+    }
+    if (model.startsWith(cli + ':')) {
+      return { provider: cli, cliModel: model.slice(cli.length + 1) }
+    }
+  }
+  return { provider: model }
+}
+
 export function getProviderForModel(model: string): 'anthropic' | 'openai' | 'google' | 'claude-code' | 'codex-cli' | 'gemini-cli' | 'qwen-code' | 'minimax' | 'mock' {
-  if (model === 'claude-code') {
-    return 'claude-code'
+  const { provider } = parseCliModel(model)
+  if ((CLI_PROVIDERS as readonly string[]).includes(provider)) {
+    return provider as CliProviderName
   }
-  if (model === 'codex-cli') {
-    return 'codex-cli'
-  }
-  if (model === 'gemini-cli') {
-    return 'gemini-cli'
-  }
-  if (model === 'qwen-code') {
-    return 'qwen-code'
-  }
-  if (model === 'minimax') {
+  if (provider === 'minimax') {
     return 'minimax'
   }
-  if (model.startsWith('mock')) {
+  if (provider.startsWith('mock')) {
     return 'mock'
   }
-  if (model.startsWith('claude')) {
+  if (provider.startsWith('claude')) {
     return 'anthropic'
   }
-  if (model.startsWith('gpt')) {
+  if (provider.startsWith('gpt')) {
     return 'openai'
   }
-  if (model.startsWith('gemini')) {
+  if (provider.startsWith('gemini')) {
     return 'google'
   }
   throw new Error(`Unknown model: ${model}`)
@@ -51,28 +60,30 @@ export function createProvider(model: string, config: MagpieConfig): AIProvider 
 
   const providerName = getProviderForModel(model)
 
+  const { cliModel } = parseCliModel(model)
+
   // Claude Code doesn't need API key config
   if (providerName === 'claude-code') {
     checkCliBinary('claude', 'Claude Code')
-    return new ClaudeCodeProvider()
+    return new ClaudeCodeProvider({ cliModel })
   }
 
   // Codex CLI doesn't need API key config
   if (providerName === 'codex-cli') {
     checkCliBinary('codex', 'Codex')
-    return new CodexCliProvider()
+    return new CodexCliProvider({ cliModel })
   }
 
   // Gemini CLI doesn't need API key config (uses Google account)
   if (providerName === 'gemini-cli') {
     checkCliBinary('gemini', 'Gemini')
-    return new GeminiCliProvider()
+    return new GeminiCliProvider({ cliModel })
   }
 
   // Qwen Code CLI doesn't need API key config (uses OAuth)
   if (providerName === 'qwen-code') {
     checkCliBinary('qwen', 'Qwen Code')
-    return new QwenCodeProvider()
+    return new QwenCodeProvider({ cliModel })
   }
 
   // Mock provider for debug mode — no API key needed

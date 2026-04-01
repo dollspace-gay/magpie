@@ -52,8 +52,8 @@ export const AVAILABLE_REVIEWERS: ReviewerOption[] = [
   },
   {
     id: 'gemini',
-    name: 'Gemini 3 Pro',
-    model: 'gemini-3-pro',
+    name: 'Gemini 3.1 Pro',
+    model: 'gemini-3.1-pro-preview',
     description: 'Uses Google AI API (requires GOOGLE_API_KEY)',
     needsApiKey: true,
     provider: 'google'

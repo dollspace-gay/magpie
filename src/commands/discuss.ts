@@ -252,7 +252,11 @@ async function runDiscussion(
   console.log()
   console.log(chalk.bgMagenta.white.bold(` Discussion `))
   console.log(chalk.dim(`├─ Topic: ${topic.slice(0, 80)}${topic.length > 80 ? '...' : ''}`))
-  console.log(chalk.dim(`├─ Reviewers: ${reviewers.map(r => r.id === 'devil-advocate' ? chalk.red(r.id) : chalk.cyan(r.id)).join(', ')}`))
+  console.log(chalk.dim(`├─ Reviewers: ${reviewers.map(r => {
+    const model = r.id === 'devil-advocate' ? config.summarizer.model : config.reviewers[r.id]?.model
+    const label = r.id === 'devil-advocate' ? chalk.red(r.id) : chalk.cyan(r.id)
+    return `${label} ${chalk.gray('(' + (model || '?') + ')')}`
+  }).join(', ')}`))
   console.log(chalk.dim(`├─ Context: ${contextStatus}`))
   console.log(chalk.dim(`├─ Max rounds: ${maxRounds}`))
   console.log(chalk.dim(`└─ Convergence: ${checkConvergence ? 'enabled' : 'disabled'}`))

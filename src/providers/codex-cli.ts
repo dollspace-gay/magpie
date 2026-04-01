@@ -1,5 +1,5 @@
 import { spawn } from 'child_process'
-import type { AIProvider, Message, ProviderOptions } from './types.js'
+import type { AIProvider, Message, CliProviderOptions } from './types.js'
 import { CliSessionHelper } from './session-helper.js'
 import { preparePromptForCli } from '../utils/prompt-file.js'
 import { withRetry } from '../utils/retry.js'
@@ -8,16 +8,18 @@ export class CodexCliProvider implements AIProvider {
   name = 'codex-cli'
   private cwd: string
   private timeout: number  // ms, 0 = no timeout
+  private cliModel?: string
   private session = new CliSessionHelper()
   // Codex gets its session ID from the first response (thread_id in JSONL)
   private sessionEnabled = false
 
   get sessionId() { return this.session.sessionId }
 
-  constructor(_options?: ProviderOptions) {
+  constructor(options?: CliProviderOptions) {
     // No API key needed for Codex CLI (uses subscription)
     this.cwd = process.cwd()
     this.timeout = 15 * 60 * 1000  // 15 minutes default
+    this.cliModel = options?.cliModel
   }
 
   setCwd(cwd: string) {
@@ -54,6 +56,9 @@ export class CodexCliProvider implements AIProvider {
 
   private buildArgs(): string[] {
     const baseArgs = ['--json', '--dangerously-bypass-approvals-and-sandbox']
+    if (this.cliModel) {
+      baseArgs.push('--model', this.cliModel)
+    }
     if (this.sessionEnabled && this.sessionId) {
       // Resume existing session
       return ['exec', 'resume', this.sessionId, ...baseArgs, '-']
