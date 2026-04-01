@@ -304,6 +304,9 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       // Get final conclusion from summarizer
       const finalConclusion = await this.getFinalConclusion(summaries)
 
+      // Verify the conclusion against the actual PR/code
+      const verifiedConclusion = await this.verifyConclusion(finalConclusion)
+
       // End summarizer session for clean JSON extraction call
       this.summarizer.provider.endSession?.()
       const parsedIssues = await this.extractIssues()
@@ -314,6 +317,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         messages: this.conversationHistory,
         summaries,
         finalConclusion,
+        verifiedConclusion,
         tokenUsage: this.getTokenUsage(),
         convergedAtRound,
         ...(parsedIssues.length > 0 ? { parsedIssues } : {})
@@ -540,6 +544,10 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       const summaries = await this.collectSummaries()
       const finalConclusion = await this.getFinalConclusion(summaries)
 
+      // Verify the conclusion against the actual PR/code
+      this.options.onWaiting?.('verifier')
+      const verifiedConclusion = await this.verifyConclusion(finalConclusion)
+
       // End summarizer session before structurization so it gets a clean,
       // non-session call. The session context (convergence + conclusion) would
       // pollute the JSON extraction and --resume ignores custom system prompts.
@@ -553,6 +561,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         messages: this.conversationHistory,
         summaries,
         finalConclusion,
+        verifiedConclusion,
         tokenUsage: this.getTokenUsage(),
         convergedAtRound,
         ...(parsedIssues.length > 0 ? { parsedIssues } : {})
@@ -871,6 +880,49 @@ ${summaryText}${this.langSuffix}`
     const messages: Message[] = [{ role: 'user', content: prompt }]
     const response = await this.summarizer.provider.chat(messages, this.withLang(this.summarizer.systemPrompt))
     this.trackTokens('summarizer', prompt + (this.summarizer.systemPrompt || ''), response)
+    return response
+  }
+
+  /**
+   * Verify the final conclusion by cross-checking it against the actual PR diff/code.
+   * The summarizer re-examines the conclusion's correctness and reasonableness,
+   * then produces a verified final conclusion.
+   */
+  private async verifyConclusion(finalConclusion: string): Promise<string> {
+    const prompt = `You are given a final review conclusion and the original PR/code changes. Your job is to VERIFY the conclusion by cross-checking it against the actual code.
+
+## Final Conclusion to Verify
+
+${finalConclusion}
+
+## Original PR/Code Changes
+
+${this.taskPrompt}
+
+## Analysis
+
+${this.analysis}
+
+## Verification Task
+
+Carefully re-read the actual code changes above and verify the conclusion:
+
+1. **Correctness Check**: Are the issues mentioned in the conclusion actually present in the code? Are there any false positives (issues claimed but not real)?
+2. **Completeness Check**: Did the conclusion miss any important issues that are visible in the code?
+3. **Reasonableness Check**: Are the severity ratings appropriate? Are the recommended actions practical?
+4. **Evidence Check**: For each key claim in the conclusion, can you find supporting evidence in the actual diff?
+
+Then provide your **Verified Final Conclusion** that:
+- Confirms findings that are supported by the code
+- Corrects any inaccurate claims
+- Adds any missed issues you found
+- Adjusts severity or recommendations if needed
+- Gives a final, authoritative assessment${this.langSuffix}`
+
+    const messages: Message[] = [{ role: 'user', content: prompt }]
+    const systemPrompt = this.withLang('You are a meticulous code review verifier. Your job is to fact-check review conclusions against the actual code changes. Be precise and evidence-based — cite specific code when confirming or correcting claims.')
+    const response = await this.summarizer.provider.chat(messages, systemPrompt)
+    this.trackTokens('summarizer', prompt + (systemPrompt || ''), response)
     return response
   }
 }

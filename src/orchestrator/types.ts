@@ -33,6 +33,7 @@ export interface DebateResult {
   messages: DebateMessage[]
   summaries: DebateSummary[]
   finalConclusion: string
+  verifiedConclusion?: string  // Verified conclusion after cross-checking with PR/code
   tokenUsage: TokenUsage[]
   convergedAtRound?: number  // If converged early
   parsedIssues?: MergedIssue[]   // Deduplicated structured issues (if reviewers output JSON)

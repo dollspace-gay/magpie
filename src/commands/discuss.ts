@@ -314,6 +314,7 @@ async function runDiscussion(
       const isParallelRound = reviewerId.startsWith('round-')
       const baseLabel = reviewerId === 'analyzer' ? 'Analyzing topic' :
                    reviewerId === 'summarizer' ? 'Generating final conclusion' :
+                   reviewerId === 'verifier' ? 'Verifying conclusion against code' :
                    reviewerId === 'convergence-check' ? 'Evaluating consensus' :
                    isParallelRound ? `Round ${reviewerId.split('-')[1]}: Starting parallel discussion` :
                    `${reviewerId} is thinking`
@@ -395,6 +396,14 @@ async function runDiscussion(
   console.log(chalk.green.bold(`  Final Conclusion`))
   console.log(chalk.green.bold(`${'═'.repeat(50)}\n`))
   console.log(marked(result.finalConclusion))
+
+  // Verified conclusion
+  if (result.verifiedConclusion) {
+    console.log(chalk.blue.bold(`\n${'═'.repeat(50)}`))
+    console.log(chalk.blue.bold(`  ✅ Verified Conclusion`))
+    console.log(chalk.blue.bold(`${'═'.repeat(50)}\n`))
+    console.log(marked(result.verifiedConclusion))
+  }
 
   // Token usage
   console.log(chalk.dim(`\n${'─'.repeat(50)}`))
@@ -539,6 +548,7 @@ export const discussCommand = new Command('discuss')
         messages: result.messages.map(m => ({ reviewerId: m.reviewerId, content: m.content, timestamp: m.timestamp })),
         summaries: result.summaries.map(s => ({ reviewerId: s.reviewerId, summary: s.summary })),
         conclusion: result.finalConclusion,
+        verifiedConclusion: result.verifiedConclusion,
         convergedAtRound: result.convergedAtRound,
         tokenUsage: result.tokenUsage,
         timestamp: new Date()
@@ -619,6 +629,7 @@ async function interactiveFollowUp(
       messages: result.messages.map(m => ({ reviewerId: m.reviewerId, content: m.content, timestamp: m.timestamp })),
       summaries: result.summaries.map(s => ({ reviewerId: s.reviewerId, summary: s.summary })),
       conclusion: result.finalConclusion,
+      verifiedConclusion: result.verifiedConclusion,
       convergedAtRound: result.convergedAtRound,
       tokenUsage: result.tokenUsage,
       timestamp: new Date()
@@ -718,6 +729,7 @@ async function handleResume(
       messages: result.messages.map(m => ({ reviewerId: m.reviewerId, content: m.content, timestamp: m.timestamp })),
       summaries: result.summaries.map(s => ({ reviewerId: s.reviewerId, summary: s.summary })),
       conclusion: result.finalConclusion,
+      verifiedConclusion: result.verifiedConclusion,
       convergedAtRound: result.convergedAtRound,
       tokenUsage: result.tokenUsage,
       timestamp: new Date()
@@ -767,6 +779,9 @@ function formatDiscussMarkdown(session: DiscussSession): string {
     }
 
     md += `### Conclusion\n\n${round.conclusion}\n\n`
+    if (round.verifiedConclusion) {
+      md += `### Verified Conclusion\n\n${round.verifiedConclusion}\n\n`
+    }
     md += `---\n\n`
   }
 

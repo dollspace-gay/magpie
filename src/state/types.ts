@@ -35,6 +35,7 @@ export interface DiscussRound {
   messages: Array<{ reviewerId: string; content: string; timestamp: Date }>
   summaries: Array<{ reviewerId: string; summary: string }>
   conclusion: string
+  verifiedConclusion?: string
   convergedAtRound?: number
   tokenUsage: Array<{ reviewerId: string; inputTokens: number; outputTokens: number; estimatedCost?: number }>
   timestamp: Date

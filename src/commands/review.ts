@@ -453,6 +453,7 @@ export const reviewCommand = new Command('review')
           const baseLabel = reviewerId === 'context-gatherer' ? 'Gathering system context' :
                        reviewerId === 'analyzer' ? 'Analyzing changes' :
                        reviewerId === 'summarizer' ? 'Generating final summary' :
+                       reviewerId === 'verifier' ? 'Verifying conclusion against code' :
                        reviewerId === 'convergence-check' ? 'Evaluating if reviewers reached consensus' :
                        isParallelRound ? `Round ${reviewerId.split('-')[1]}: Starting parallel review` :
                        `${reviewerId} is thinking`
@@ -628,6 +629,14 @@ export const reviewCommand = new Command('review')
       console.log(chalk.green.bold(`${'═'.repeat(50)}\n`))
       // Render markdown for terminal
       console.log(marked(fixMarkdown(result.finalConclusion)))
+
+      // Verified conclusion
+      if (result.verifiedConclusion) {
+        console.log(chalk.blue.bold(`\n${'═'.repeat(50)}`))
+        console.log(chalk.blue.bold(`  ✅ Verified Conclusion`))
+        console.log(chalk.blue.bold(`${'═'.repeat(50)}\n`))
+        console.log(marked(fixMarkdown(result.verifiedConclusion)))
+      }
 
       // Display structured issues table (if available)
       if (result.parsedIssues && result.parsedIssues.length > 0) {

@@ -75,6 +75,7 @@ ${result.messages.slice(-reviewers.length).map(m => `[${m.reviewerId}]: ${m.cont
 
 Final Conclusion:
 ${result.finalConclusion}
+${result.verifiedConclusion ? `\nVerified Conclusion:\n${result.verifiedConclusion}` : ''}
 `.trim()
 
   console.log(chalk.cyan(`\n💬 You can ask follow-up questions about this review.`))

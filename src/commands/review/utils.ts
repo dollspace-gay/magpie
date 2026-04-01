@@ -96,5 +96,9 @@ export function formatMarkdown(result: DebateResult): string {
 
   md += `## Final Conclusion\n\n${result.finalConclusion}\n`
 
+  if (result.verifiedConclusion) {
+    md += `\n## Verified Conclusion\n\n${result.verifiedConclusion}\n`
+  }
+
   return md
 }
