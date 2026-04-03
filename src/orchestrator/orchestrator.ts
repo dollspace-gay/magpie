@@ -3,7 +3,6 @@ import type { Message } from '../providers/types.js'
 import type {
   Reviewer,
   DebateMessage,
-  DebateSummary,
   DebateResult,
   OrchestratorOptions,
   TokenUsage,
@@ -298,11 +297,9 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
       }
 
       this.checkInterrupt()
-      // Collect summaries from each reviewer
-      const summaries = await this.collectSummaries()
 
-      // Get final conclusion from summarizer
-      const finalConclusion = await this.getFinalConclusion(summaries)
+      // Get final conclusion directly from conversation history
+      const finalConclusion = await this.getFinalConclusion()
 
       // Verify the conclusion against the actual PR/code
       const verifiedConclusion = await this.verifyConclusion(finalConclusion)
@@ -315,7 +312,6 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         prNumber: label,
         analysis: this.analysis,
         messages: this.conversationHistory,
-        summaries,
         finalConclusion,
         verifiedConclusion,
         tokenUsage: this.getTokenUsage(),
@@ -541,8 +537,7 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
 
       this.checkInterrupt()
       this.options.onWaiting?.('summarizer')
-      const summaries = await this.collectSummaries()
-      const finalConclusion = await this.getFinalConclusion(summaries)
+      const finalConclusion = await this.getFinalConclusion()
 
       // Verify the conclusion against the actual PR/code
       this.options.onWaiting?.('verifier')
@@ -559,7 +554,6 @@ Then on the LAST line, respond with EXACTLY one word: CONVERGED or NOT_CONVERGED
         analysis: this.analysis,
         context: this.gatheredContext || undefined,
         messages: this.conversationHistory,
-        summaries,
         finalConclusion,
         verifiedConclusion,
         tokenUsage: this.getTokenUsage(),
@@ -843,39 +837,18 @@ Use reviewer IDs: ${reviewerIds}`
     return []
   }
 
-  private async collectSummaries(): Promise<DebateSummary[]> {
-    const summaries: DebateSummary[] = []
-    const summaryPrompt = `Please summarize your key points and conclusions. Do not reveal your identity or role.${this.langSuffix}`
-
-    for (const reviewer of this.reviewers) {
-      try {
-        const messages = this.buildMessages(reviewer.id)
-        messages.push({ role: 'user', content: summaryPrompt })
-
-        const summary = await reviewer.provider.chat(messages, this.withLang(reviewer.systemPrompt))
-        const inputText = messages.map(m => m.content).join('\n') + (reviewer.systemPrompt || '')
-        this.trackTokens(reviewer.id, inputText, summary)
-
-        summaries.push({ reviewerId: reviewer.id, summary })
-      } catch (err) {
-        logger.warn(`Failed to collect summary from ${reviewer.id}:`, err)
-      }
-    }
-
-    return summaries
-  }
-
-  private async getFinalConclusion(summaries: DebateSummary[]): Promise<string> {
-    const summaryText = summaries
-      .map((s, i) => `Reviewer ${i + 1}:\n${s.summary}`)
+  private async getFinalConclusion(): Promise<string> {
+    // Build conversation text from all debate rounds
+    const conversationText = this.conversationHistory
+      .map(msg => `[${msg.reviewerId}]:\n${msg.content}`)
       .join('\n\n---\n\n')
 
-    const prompt = `There are exactly ${summaries.length} reviewers in this debate. Based on their anonymous summaries below, provide a final conclusion including:
+    const prompt = `There are ${this.reviewers.length} reviewers in this debate. Based on their full discussion below, provide a final conclusion including:
 - Points of consensus
 - Points of disagreement with analysis
 - Recommended action items
 
-${summaryText}${this.langSuffix}`
+${conversationText}${this.langSuffix}`
 
     const messages: Message[] = [{ role: 'user', content: prompt }]
     const response = await this.summarizer.provider.chat(messages, this.withLang(this.summarizer.systemPrompt))

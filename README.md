@@ -132,7 +132,7 @@ analyzer:
 summarizer:
   model: claude-code
   prompt: |
-    You are a neutral technical reviewer. Based on the anonymous reviewer summaries, provide:
+    You are a neutral technical reviewer. Based on the full reviewer discussion, provide:
     1. Points of consensus
     2. Points of disagreement
     3. Recommended action items
@@ -341,9 +341,7 @@ Discussion features:
    │            ↓
    └─ ... (repeat until max rounds or convergence)
    ↓
-5. Each Reviewer summarizes their points
-   ↓
-6. Summarizer produces final conclusion
+5. Summarizer produces final conclusion from full debate history
 ```
 
 ### Fair Debate Model

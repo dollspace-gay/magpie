@@ -33,7 +33,6 @@ export interface DiscussRound {
   topic: string
   analysis: string
   messages: Array<{ reviewerId: string; content: string; timestamp: Date }>
-  summaries: Array<{ reviewerId: string; summary: string }>
   conclusion: string
   verifiedConclusion?: string
   convergedAtRound?: number

@@ -141,7 +141,7 @@ Be concise but thorough.` + buildLanguageRule(language)
 
 function getDiscussSummarizerPrompt(language?: string): string {
   return `You are a neutral technical moderator.
-Based on the anonymous participant summaries, provide:
+Based on the full participant discussion, provide:
 - Points of consensus
 - Points of disagreement with analysis
 - Recommended action items and next steps
@@ -546,7 +546,6 @@ export const discussCommand = new Command('discuss')
         topic: resolvedTopic,
         analysis: result.analysis,
         messages: result.messages.map(m => ({ reviewerId: m.reviewerId, content: m.content, timestamp: m.timestamp })),
-        summaries: result.summaries.map(s => ({ reviewerId: s.reviewerId, summary: s.summary })),
         conclusion: result.finalConclusion,
         verifiedConclusion: result.verifiedConclusion,
         convergedAtRound: result.convergedAtRound,
@@ -627,7 +626,6 @@ async function interactiveFollowUp(
       topic: answer,
       analysis: result.analysis,
       messages: result.messages.map(m => ({ reviewerId: m.reviewerId, content: m.content, timestamp: m.timestamp })),
-      summaries: result.summaries.map(s => ({ reviewerId: s.reviewerId, summary: s.summary })),
       conclusion: result.finalConclusion,
       verifiedConclusion: result.verifiedConclusion,
       convergedAtRound: result.convergedAtRound,
@@ -727,7 +725,6 @@ async function handleResume(
       topic: newTopic,
       analysis: result.analysis,
       messages: result.messages.map(m => ({ reviewerId: m.reviewerId, content: m.content, timestamp: m.timestamp })),
-      summaries: result.summaries.map(s => ({ reviewerId: s.reviewerId, summary: s.summary })),
       conclusion: result.finalConclusion,
       verifiedConclusion: result.verifiedConclusion,
       convergedAtRound: result.convergedAtRound,
@@ -771,11 +768,6 @@ function formatDiscussMarkdown(session: DiscussSession): string {
     md += `### Debate\n\n`
     for (const msg of round.messages) {
       md += `#### ${msg.reviewerId}\n\n${msg.content}\n\n`
-    }
-
-    md += `### Summaries\n\n`
-    for (const summary of round.summaries) {
-      md += `#### ${summary.reviewerId}\n\n${summary.summary}\n\n`
     }
 
     md += `### Conclusion\n\n${round.conclusion}\n\n`

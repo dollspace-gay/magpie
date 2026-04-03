@@ -250,18 +250,13 @@ export function buildInitialSessionContext(
     parts.push(`## Gathered Context\n\n${debateResult.context.summary}`)
   }
 
-  // 4. This reviewer's debate messages and summary
+  // 4. This reviewer's debate messages
   const reviewerMessages = debateResult.messages
     .filter(m => m.reviewerId === reviewer.id)
     .map(m => m.content)
-  const reviewerSummary = debateResult.summaries
-    .find(s => s.reviewerId === reviewer.id)?.summary || ''
 
   if (reviewerMessages.length > 0) {
     parts.push(`## Your Original Review Analysis\n\n${reviewerMessages.join('\n\n')}`)
-  }
-  if (reviewerSummary) {
-    parts.push(`## Your Review Summary\n\n${reviewerSummary}`)
   }
 
   // 5. Overall analysis

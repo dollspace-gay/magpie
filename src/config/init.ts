@@ -167,7 +167,7 @@ summarizer:
   model: ${analyzerModel}
   prompt: |
     You are a neutral technical reviewer.
-    Based on the anonymous reviewer summaries, provide:
+    Based on the full reviewer discussion, provide:
     - Points of consensus
     - Points of disagreement with analysis
     - Recommended action items

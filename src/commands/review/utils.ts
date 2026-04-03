@@ -89,11 +89,6 @@ export function formatMarkdown(result: DebateResult): string {
     md += `### ${msg.reviewerId}\n\n${msg.content}\n\n`
   }
 
-  md += `## Summaries\n\n`
-  for (const summary of result.summaries) {
-    md += `### ${summary.reviewerId}\n\n${summary.summary}\n\n`
-  }
-
   md += `## Final Conclusion\n\n${result.finalConclusion}\n`
 
   if (result.verifiedConclusion) {

@@ -14,11 +14,6 @@ export interface DebateMessage {
   timestamp: Date
 }
 
-export interface DebateSummary {
-  reviewerId: string
-  summary: string
-}
-
 export interface TokenUsage {
   reviewerId: string
   inputTokens: number
@@ -31,7 +26,6 @@ export interface DebateResult {
   analysis: string
   context?: GatheredContext
   messages: DebateMessage[]
-  summaries: DebateSummary[]
   finalConclusion: string
   verifiedConclusion?: string  // Verified conclusion after cross-checking with PR/code
   tokenUsage: TokenUsage[]
